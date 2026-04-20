@@ -1675,21 +1675,889 @@ function openEquipModal(data = null) {
 }
 
 // ═══════════════════════════════════════════════════════
-// 등록/리스트 페이지 (파트2에서 구현 예정)
+// 견적 등록
 // ═══════════════════════════════════════════════════════
-function renderRegQuotation(el)  { el.innerHTML = comingSoon('견적 등록'); }
-function renderRegPurchase(el)   { el.innerHTML = comingSoon('구매 등록'); }
-function renderRegSales(el)      { el.innerHTML = comingSoon('판매 등록'); }
-function renderListQuotation(el) { el.innerHTML = comingSoon('견적 목록'); }
-function renderListPurchase(el)  { el.innerHTML = comingSoon('구매 목록'); }
-function renderListSales(el)     { el.innerHTML = comingSoon('판매 목록'); }
+function renderRegQuotation(el, prefill = null) {
+  const today = new Date().toISOString().slice(0,10);
+  const vendorOpts = (CACHE.vendor||[]).map(v =>
+    `<option value="${v['ID']}" data-name="${v['회사명']}">${v['회사명']} (${v['구분']||''})</option>`).join('');
+  const projOpts = (CACHE.project||[]).map(p =>
+    `<option value="${p['ID']}" data-name="${p['프로젝트명']}">${p['프로젝트명']}</option>`).join('');
+  const staffOpts = (CACHE.staff||[]).map(s =>
+    `<option value="${s['ID']}" data-name="${s['이름']}">${s['이름']} (${s['부서']||''})</option>`).join('');
 
-function comingSoon(name) {
-  return `<div style="text-align:center; padding:80px 24px; color:var(--text3)">
-    <div style="font-size:40px; margin-bottom:16px">🚧</div>
-    <div style="font-size:16px; font-weight:600; color:var(--text2); margin-bottom:8px">${name}</div>
-    <div style="font-size:13px">파트 2에서 구현됩니다</div>
+  el.innerHTML = `
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">📋 견적 등록</div>
+      <div class="flex gap-2">
+        <button class="btn btn-secondary btn-sm" onclick="navigate('list-quotation')">← 목록</button>
+        <button class="btn btn-success btn-sm" onclick="submitQuotation()">💾 저장</button>
+      </div>
+    </div>
+
+    <div class="section-title">기본 정보</div>
+    <div class="form-grid form-grid-3" style="margin-bottom:20px">
+      <div class="form-group">
+        <label class="form-label">견적일 <span class="req">*</span></label>
+        <input class="form-input" type="date" id="q-date" value="${prefill?.견적일||today}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">공급사 <span class="req">*</span></label>
+        <select class="form-select" id="q-vendor">
+          <option value="">-- 선택 --</option>${vendorOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">유효기간</label>
+        <input class="form-input" type="date" id="q-expire" value="${prefill?.유효기간||''}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">프로젝트</label>
+        <select class="form-select" id="q-project">
+          <option value="">-- 선택 --</option>${projOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">담당자</label>
+        <select class="form-select" id="q-staff">
+          <option value="">-- 선택 --</option>${staffOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">상태</label>
+        <select class="form-select" id="q-status">
+          <option value="진행중">진행중</option>
+          <option value="완료">완료</option>
+          <option value="취소">취소</option>
+        </select>
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label class="form-label">비고</label>
+        <input class="form-input" id="q-note" placeholder="메모">
+      </div>
+    </div>
+
+    <hr class="divider">
+    <div class="flex items-center gap-2 mb-4">
+      <div class="section-title" style="margin:0">품목 명세</div>
+      <button class="btn btn-secondary btn-sm" onclick="addQuotLine()">+ 품목 추가</button>
+      <span style="font-size:11px;color:var(--text3);margin-left:4px">MasterDB에서 선택하거나 직접 입력</span>
+    </div>
+    <div class="line-table-wrap" style="margin-bottom:20px">
+      <table class="line-table">
+        <thead><tr>
+          <th style="width:40px">No.</th>
+          <th style="width:80px">구분</th>
+          <th style="width:160px">품번 선택</th>
+          <th>품명</th>
+          <th>모델명</th>
+          <th style="width:70px">수량</th>
+          <th style="width:80px">단위</th>
+          <th style="width:120px">견적단가</th>
+          <th style="width:80px">통화</th>
+          <th style="width:100px">소계</th>
+          <th style="width:36px"></th>
+        </tr></thead>
+        <tbody id="quot-lines"></tbody>
+      </table>
+    </div>
+    <div class="flex" style="justify-content:flex-end; gap:24px; padding:0 4px">
+      <span style="font-size:13px;color:var(--text2)">합계 (참고용)</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600" id="quot-total">—</span>
+    </div>
   </div>`;
+
+  // 초기 라인 1개
+  addQuotLine();
+}
+
+let _quotLineIdx = 0;
+
+function addQuotLine(data = {}) {
+  const tbody = document.getElementById('quot-lines');
+  if (!tbody) return;
+  const idx = _quotLineIdx++;
+  const currOpts = (CACHE.currency||[]).map(c =>
+    `<option value="${c['통화코드']}" ${(data['통화']||'KRW')===c['통화코드']?'selected':''}>${c['통화코드']}</option>`).join('');
+
+  // Parts + Equipment 합쳐서 선택 드롭다운
+  const itemOpts = [
+    ...(CACHE.parts||[]).map(p => `<option value="P|${p['PartNo']}" data-name="${p['품명']}" data-model="${p['모델명']||''}" data-unit="${p['단위']||''}" data-type="Parts">P: ${p['PartNo']} - ${p['품명']}</option>`),
+    ...(CACHE.equipment||[]).map(e => `<option value="E|${e['EquipNo']}" data-name="${e['장비명']}" data-model="${e['모델명']||''}" data-unit="${e['단위']||''}" data-type="Equipment">E: ${e['EquipNo']} - ${e['장비명']}</option>`),
+  ].join('');
+
+  const tr = document.createElement('tr');
+  tr.id = `qline-${idx}`;
+  tr.innerHTML = `
+    <td style="text-align:center;color:var(--text3);font-size:11px">${idx+1}</td>
+    <td><select class="form-select" id="ql-type-${idx}" style="width:100%">
+      <option value="Parts" ${data['구분']==='Parts'?'selected':''}>Parts</option>
+      <option value="Equipment" ${data['구분']==='Equipment'?'selected':''}>Equipment</option>
+      <option value="기타" ${data['구분']==='기타'?'selected':''}>기타</option>
+    </select></td>
+    <td><select class="form-select" id="ql-item-${idx}" onchange="applyLineItem(${idx})" style="width:100%">
+      <option value="">직접입력</option>${itemOpts}
+    </select></td>
+    <td><input class="form-input" id="ql-name-${idx}" value="${data['품명']||''}" placeholder="품명"></td>
+    <td><input class="form-input" id="ql-model-${idx}" value="${data['모델명']||''}" placeholder="모델명"></td>
+    <td><input class="form-input" type="number" id="ql-qty-${idx}" value="${data['수량']||1}" min="0" oninput="calcQuotTotal()"></td>
+    <td><input class="form-input" id="ql-unit-${idx}" value="${data['단위']||'EA'}" placeholder="EA"></td>
+    <td><input class="form-input" type="number" id="ql-price-${idx}" value="${data['견적단가']||''}" placeholder="0" oninput="calcQuotTotal()"></td>
+    <td><select class="form-select" id="ql-curr-${idx}">${currOpts}</select></td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;padding-right:10px" id="ql-sub-${idx}">—</td>
+    <td><button class="line-del-btn" onclick="removeQuotLine('qline-${idx}')">✕</button></td>`;
+  tbody.appendChild(tr);
+}
+
+function applyLineItem(idx) {
+  const sel = document.getElementById(`ql-item-${idx}`);
+  if (!sel || sel.value === '') return;
+  const opt = sel.options[sel.selectedIndex];
+  const [typePrefix] = sel.value.split('|');
+  document.getElementById(`ql-name-${idx}`).value  = opt.getAttribute('data-name') || '';
+  document.getElementById(`ql-model-${idx}`).value = opt.getAttribute('data-model') || '';
+  document.getElementById(`ql-unit-${idx}`).value  = opt.getAttribute('data-unit') || 'EA';
+  document.getElementById(`ql-type-${idx}`).value  = opt.getAttribute('data-type') || 'Parts';
+}
+
+function removeQuotLine(rowId) {
+  const el = document.getElementById(rowId);
+  if (el) el.remove();
+  calcQuotTotal();
+}
+
+function calcQuotTotal() {
+  const rows = document.querySelectorAll('#quot-lines tr');
+  let total = 0;
+  rows.forEach(tr => {
+    const id = tr.id.replace('qline-','');
+    const qty   = parseFloat(document.getElementById(`ql-qty-${id}`)?.value||0);
+    const price = parseFloat(document.getElementById(`ql-price-${id}`)?.value||0);
+    const sub   = qty * price;
+    const subEl = document.getElementById(`ql-sub-${id}`);
+    if (subEl) subEl.textContent = sub > 0 ? sub.toLocaleString() : '—';
+    total += sub;
+  });
+  const totalEl = document.getElementById('quot-total');
+  if (totalEl) totalEl.textContent = total > 0 ? total.toLocaleString() : '—';
+}
+
+async function submitQuotation(editQuotNo = null) {
+  const date   = val('q-date');
+  const vendor = document.getElementById('q-vendor');
+  const proj   = document.getElementById('q-project');
+  const staff  = document.getElementById('q-staff');
+  if (!date)         { showToast('견적일을 입력하세요','error'); return; }
+  if (!vendor.value) { showToast('공급사를 선택하세요','error'); return; }
+
+  const vName = vendor.selectedIndex > 0 ? vendor.options[vendor.selectedIndex].getAttribute('data-name') : '';
+  const pName = proj.selectedIndex > 0   ? proj.options[proj.selectedIndex].getAttribute('data-name') : '';
+  const sName = staff.selectedIndex > 0  ? staff.options[staff.selectedIndex].getAttribute('data-name') : '';
+
+  const header = {
+    '견적일': date, '공급사ID': vendor.value, '공급사명': vName,
+    '프로젝트ID': proj.value, '프로젝트명': pName,
+    '담당자ID': staff.value, '담당자명': sName,
+    '유효기간': val('q-expire'), '비고': val('q-note'),
+    '상태': val('q-status'), '파일URL': '',
+  };
+
+  const lines = [];
+  document.querySelectorAll('#quot-lines tr').forEach(tr => {
+    const id = tr.id.replace('qline-','');
+    const itemSel = document.getElementById(`ql-item-${id}`);
+    const itemVal = itemSel ? itemSel.value : '';
+    const [, itemNo] = itemVal.split('|');
+    lines.push({
+      '구분':    document.getElementById(`ql-type-${id}`)?.value || '',
+      'ItemNo':  itemNo || '',
+      '품명':    document.getElementById(`ql-name-${id}`)?.value || '',
+      '모델명':  document.getElementById(`ql-model-${id}`)?.value || '',
+      '수량':    document.getElementById(`ql-qty-${id}`)?.value || 0,
+      '단위':    document.getElementById(`ql-unit-${id}`)?.value || '',
+      '견적단가':document.getElementById(`ql-price-${id}`)?.value || 0,
+      '통화':    document.getElementById(`ql-curr-${id}`)?.value || 'KRW',
+      '비고': '',
+    });
+  });
+
+  if (!lines.length) { showToast('품목을 1개 이상 추가하세요','error'); return; }
+
+  const saveBtn = document.querySelector('.btn-success');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '저장 중...'; }
+
+  try {
+    let res;
+    if (editQuotNo) {
+      res = await api({ action: 'updateQuot', quotNo: editQuotNo, header, lines });
+      showToast('견적이 수정되었습니다');
+    } else {
+      res = await api({ action: 'addQuotation', header, lines });
+      showToast(`견적이 저장되었습니다 (${res.quotNo})`);
+    }
+    _quotLineIdx = 0;
+    navigate('list-quotation');
+  } catch(e) {
+    showToast('저장 실패: ' + e.message, 'error');
+  } finally {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 저장'; }
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// 구매 등록
+// ═══════════════════════════════════════════════════════
+function renderRegPurchase(el) { renderRegSalesForm(el, '구매'); }
+function renderRegSales(el)    { renderRegSalesForm(el, '판매'); }
+
+function renderRegSalesForm(el, type) {
+  const today = new Date().toISOString().slice(0,10);
+  const icon  = type === '구매' ? '🛒' : '📦';
+  const vendorOpts = (CACHE.vendor||[]).map(v =>
+    `<option value="${v['ID']}" data-name="${v['회사명']}">${v['회사명']} (${v['구분']||''})</option>`).join('');
+  const projOpts = (CACHE.project||[]).map(p =>
+    `<option value="${p['ID']}" data-name="${p['프로젝트명']}">${p['프로젝트명']}</option>`).join('');
+  const staffOpts = (CACHE.staff||[]).map(s =>
+    `<option value="${s['ID']}" data-name="${s['이름']}">${s['이름']} (${s['부서']||''})</option>`).join('');
+  const quotOpts  = `<option value="">-- 연결 없음 --</option>`; // 목록에서 로드
+
+  el.innerHTML = `
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">${icon} ${type} 등록</div>
+      <div class="flex gap-2">
+        <button class="btn btn-secondary btn-sm" onclick="navigate('list-${type==='구매'?'purchase':'sales'}')">← 목록</button>
+        <button class="btn btn-success btn-sm" onclick="submitSales('${type}')">💾 저장</button>
+      </div>
+    </div>
+
+    <div class="section-title">기본 정보</div>
+    <div class="form-grid form-grid-3" style="margin-bottom:20px">
+      <div class="form-group">
+        <label class="form-label">거래일 <span class="req">*</span></label>
+        <input class="form-input" type="date" id="s-date" value="${today}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">${type==='구매'?'구매처':'납품처'} <span class="req">*</span></label>
+        <select class="form-select" id="s-vendor">
+          <option value="">-- 선택 --</option>${vendorOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">프로젝트</label>
+        <select class="form-select" id="s-project">
+          <option value="">-- 선택 --</option>${projOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">담당자</label>
+        <select class="form-select" id="s-staff">
+          <option value="">-- 선택 --</option>${staffOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">발주번호 (PO No.)</label>
+        <input class="form-input" id="s-po" placeholder="PO-2025-001">
+      </div>
+      <div class="form-group">
+        <label class="form-label">연결 견적번호</label>
+        <input class="form-input" id="s-quotno" placeholder="Q-2025-001 (선택사항)">
+      </div>
+      <div class="form-group">
+        <label class="form-label">상태</label>
+        <select class="form-select" id="s-status">
+          <option value="확정">확정</option>
+          <option value="진행중">진행중</option>
+          <option value="취소">취소</option>
+        </select>
+      </div>
+      <div class="form-group" style="grid-column:2/-1">
+        <label class="form-label">비고</label>
+        <input class="form-input" id="s-note" placeholder="메모">
+      </div>
+    </div>
+
+    <hr class="divider">
+    <div class="flex items-center gap-2 mb-4">
+      <div class="section-title" style="margin:0">품목 명세</div>
+      <button class="btn btn-secondary btn-sm" onclick="addSalesLine()">+ 품목 추가</button>
+    </div>
+    <div class="line-table-wrap" style="margin-bottom:20px">
+      <table class="line-table">
+        <thead><tr>
+          <th style="width:40px">No.</th>
+          <th style="width:80px">구분</th>
+          <th style="width:160px">품번 선택</th>
+          <th>품명</th>
+          <th>모델명</th>
+          <th style="width:70px">수량</th>
+          <th style="width:80px">단위</th>
+          <th style="width:120px">확정단가</th>
+          <th style="width:80px">통화</th>
+          <th style="width:100px">소계</th>
+          <th style="width:36px"></th>
+        </tr></thead>
+        <tbody id="sales-lines"></tbody>
+      </table>
+    </div>
+    <div class="flex" style="justify-content:flex-end; gap:24px; padding:0 4px">
+      <span style="font-size:13px;color:var(--text2)">합계 (참고용)</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600" id="sales-total">—</span>
+    </div>
+  </div>`;
+
+  window._currentSalesType = type;
+  _salesLineIdx = 0;
+  addSalesLine();
+}
+
+let _salesLineIdx = 0;
+
+function addSalesLine(data = {}) {
+  const tbody = document.getElementById('sales-lines');
+  if (!tbody) return;
+  const idx = _salesLineIdx++;
+  const currOpts = (CACHE.currency||[]).map(c =>
+    `<option value="${c['통화코드']}" ${(data['통화']||'KRW')===c['통화코드']?'selected':''}>${c['통화코드']}</option>`).join('');
+  const itemOpts = [
+    ...(CACHE.parts||[]).map(p => `<option value="P|${p['PartNo']}" data-name="${p['품명']}" data-model="${p['모델명']||''}" data-unit="${p['단위']||''}" data-type="Parts">P: ${p['PartNo']} - ${p['품명']}</option>`),
+    ...(CACHE.equipment||[]).map(e => `<option value="E|${e['EquipNo']}" data-name="${e['장비명']}" data-model="${e['모델명']||''}" data-unit="${e['단위']||''}" data-type="Equipment">E: ${e['EquipNo']} - ${e['장비명']}</option>`),
+  ].join('');
+
+  const tr = document.createElement('tr');
+  tr.id = `sline-${idx}`;
+  tr.innerHTML = `
+    <td style="text-align:center;color:var(--text3);font-size:11px">${idx+1}</td>
+    <td><select class="form-select" id="sl-type-${idx}">
+      <option value="Parts">Parts</option>
+      <option value="Equipment">Equipment</option>
+      <option value="기타">기타</option>
+    </select></td>
+    <td><select class="form-select" id="sl-item-${idx}" onchange="applySalesItem(${idx})">
+      <option value="">직접입력</option>${itemOpts}
+    </select></td>
+    <td><input class="form-input" id="sl-name-${idx}" value="${data['품명']||''}" placeholder="품명"></td>
+    <td><input class="form-input" id="sl-model-${idx}" value="${data['모델명']||''}" placeholder="모델명"></td>
+    <td><input class="form-input" type="number" id="sl-qty-${idx}" value="${data['수량']||1}" min="0" oninput="calcSalesTotal()"></td>
+    <td><input class="form-input" id="sl-unit-${idx}" value="${data['단위']||'EA'}"></td>
+    <td><input class="form-input" type="number" id="sl-price-${idx}" value="${data['확정단가']||''}" placeholder="0" oninput="calcSalesTotal()"></td>
+    <td><select class="form-select" id="sl-curr-${idx}">${currOpts}</select></td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;padding-right:10px" id="sl-sub-${idx}">—</td>
+    <td><button class="line-del-btn" onclick="removeSalesLine('sline-${idx}')">✕</button></td>`;
+  tbody.appendChild(tr);
+}
+
+function applySalesItem(idx) {
+  const sel = document.getElementById(`sl-item-${idx}`);
+  if (!sel || sel.value === '') return;
+  const opt = sel.options[sel.selectedIndex];
+  document.getElementById(`sl-name-${idx}`).value  = opt.getAttribute('data-name') || '';
+  document.getElementById(`sl-model-${idx}`).value = opt.getAttribute('data-model') || '';
+  document.getElementById(`sl-unit-${idx}`).value  = opt.getAttribute('data-unit') || 'EA';
+  document.getElementById(`sl-type-${idx}`).value  = opt.getAttribute('data-type') || 'Parts';
+}
+
+function removeSalesLine(rowId) {
+  const el = document.getElementById(rowId);
+  if (el) el.remove();
+  calcSalesTotal();
+}
+
+function calcSalesTotal() {
+  let total = 0;
+  document.querySelectorAll('#sales-lines tr').forEach(tr => {
+    const id    = tr.id.replace('sline-','');
+    const qty   = parseFloat(document.getElementById(`sl-qty-${id}`)?.value||0);
+    const price = parseFloat(document.getElementById(`sl-price-${id}`)?.value||0);
+    const sub   = qty * price;
+    const subEl = document.getElementById(`sl-sub-${id}`);
+    if (subEl) subEl.textContent = sub > 0 ? sub.toLocaleString() : '—';
+    total += sub;
+  });
+  const totalEl = document.getElementById('sales-total');
+  if (totalEl) totalEl.textContent = total > 0 ? total.toLocaleString() : '—';
+}
+
+async function submitSales(type, editSalesNo = null) {
+  const date   = val('s-date');
+  const vendor = document.getElementById('s-vendor');
+  if (!date)         { showToast('거래일을 입력하세요','error'); return; }
+  if (!vendor.value) { showToast(`${type==='구매'?'구매처':'납품처'}를 선택하세요`,'error'); return; }
+
+  const proj  = document.getElementById('s-project');
+  const staff = document.getElementById('s-staff');
+  const vName = vendor.selectedIndex > 0 ? vendor.options[vendor.selectedIndex].getAttribute('data-name') : '';
+  const pName = proj.selectedIndex > 0   ? proj.options[proj.selectedIndex].getAttribute('data-name') : '';
+  const sName = staff.selectedIndex > 0  ? staff.options[staff.selectedIndex].getAttribute('data-name') : '';
+
+  const header = {
+    '거래일': date, '거래유형': type,
+    '거래처ID': vendor.value, '거래처명': vName,
+    '프로젝트ID': proj.value, '프로젝트명': pName,
+    '담당자ID': staff.value,  '담당자명': sName,
+    '발주번호': val('s-po'),  '연결견적No': val('s-quotno'),
+    '비고': val('s-note'),    '상태': val('s-status'), '파일URL': '',
+  };
+
+  const lines = [];
+  document.querySelectorAll('#sales-lines tr').forEach(tr => {
+    const id = tr.id.replace('sline-','');
+    const itemVal = document.getElementById(`sl-item-${id}`)?.value || '';
+    const [, itemNo] = itemVal.split('|');
+    lines.push({
+      '구분':     document.getElementById(`sl-type-${id}`)?.value || '',
+      'ItemNo':   itemNo || '',
+      '품명':     document.getElementById(`sl-name-${id}`)?.value || '',
+      '모델명':   document.getElementById(`sl-model-${id}`)?.value || '',
+      '수량':     document.getElementById(`sl-qty-${id}`)?.value || 0,
+      '단위':     document.getElementById(`sl-unit-${id}`)?.value || '',
+      '확정단가': document.getElementById(`sl-price-${id}`)?.value || 0,
+      '통화':     document.getElementById(`sl-curr-${id}`)?.value || 'KRW',
+      '비고': '',
+    });
+  });
+
+  if (!lines.length) { showToast('품목을 1개 이상 추가하세요','error'); return; }
+
+  const saveBtn = document.querySelector('.btn-success');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '저장 중...'; }
+
+  try {
+    if (editSalesNo) {
+      await api({ action: 'updateSales', salesNo: editSalesNo, header, lines });
+      showToast(`${type} 내역이 수정되었습니다`);
+    } else {
+      const res = await api({ action: 'addSales', header, lines });
+      showToast(`${type}이 저장되었습니다 (${res.salesNo})`);
+    }
+    _salesLineIdx = 0;
+    navigate(type === '구매' ? 'list-purchase' : 'list-sales');
+  } catch(e) {
+    showToast('저장 실패: ' + e.message, 'error');
+  } finally {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 저장'; }
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// 견적 목록
+// ═══════════════════════════════════════════════════════
+async function renderListQuotation(el) {
+  el.innerHTML = `
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">📑 견적 목록</div>
+      <button class="btn btn-primary btn-sm" onclick="navigate('reg-quotation')">+ 견적 등록</button>
+    </div>
+    <div class="search-bar">
+      <div class="search-input-wrap">
+        <span class="search-icon">🔍</span>
+        <input class="search-input" id="qlist-search" placeholder="견적번호, 공급사, 프로젝트 검색...">
+      </div>
+      <select class="form-select" id="qlist-status" style="width:120px">
+        <option value="">전체 상태</option>
+        <option value="진행중">진행중</option>
+        <option value="완료">완료</option>
+        <option value="취소">취소</option>
+      </select>
+      <button class="btn btn-secondary btn-sm" onclick="loadQuotList()">검색</button>
+    </div>
+    <div id="qlist-table">
+      <div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
+    </div>
+  </div>`;
+
+  document.getElementById('qlist-search').addEventListener('keydown', e => {
+    if (e.key === 'Enter') loadQuotList();
+  });
+  loadQuotList();
+}
+
+async function loadQuotList() {
+  const el = document.getElementById('qlist-table');
+  if (!el) return;
+  el.innerHTML = `<div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>`;
+  try {
+    const filter = {};
+    const kw     = document.getElementById('qlist-search')?.value.trim();
+    const status = document.getElementById('qlist-status')?.value;
+    if (kw)     filter.keyword = kw;
+    if (status) filter.status  = status;
+
+    const d    = await api({ action: 'getQuotations', filter });
+    const rows = d.rows || [];
+    if (!rows.length) {
+      el.innerHTML = '<div class="table-empty">견적 데이터가 없습니다</div>'; return;
+    }
+    el.innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>견적번호</th><th>견적일</th><th>공급사</th><th>프로젝트</th>
+        <th>담당자</th><th style="text-align:center">품목수</th>
+        <th style="text-align:right">합계(참고)</th><th>상태</th><th>등록일</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r => `
+        <tr>
+          <td class="td-mono" style="cursor:pointer;color:var(--accent)" onclick="openQuotDetail('${r['QuotNo']}')">${r['QuotNo']}</td>
+          <td class="td-muted">${fmtDate(r['견적일'])}</td>
+          <td><strong>${r['공급사명']||''}</strong></td>
+          <td class="td-muted">${r['프로젝트명']||'—'}</td>
+          <td class="td-muted">${r['담당자명']||'—'}</td>
+          <td style="text-align:center">${r['lineCount']||0}</td>
+          <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
+            ${r['totalAmount'] ? Number(r['totalAmount']).toLocaleString() : '—'}
+          </td>
+          <td>${badgeStatus(r['상태'])}</td>
+          <td class="td-muted text-sm">${fmtDate(r['등록일'])}</td>
+          <td>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick="openQuotDetail('${r['QuotNo']}')">상세</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteQuot('${r['QuotNo']}')">삭제</button>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+    <div style="padding:10px 14px;font-size:11px;color:var(--text3)">총 ${rows.length}건</div>`;
+  } catch(e) {
+    el.innerHTML = '<div class="table-empty">로드 실패</div>';
+  }
+}
+
+async function openQuotDetail(quotNo) {
+  try {
+    const d = await api({ action: 'getQuotDetail', quotNo });
+    if (!d.ok) { showToast('상세 로드 실패','error'); return; }
+    const h = d.header;
+    const lines = d.lines || [];
+    const total = lines.reduce((s, l) => s + (Number(l['견적단가']) * Number(l['수량']) || 0), 0);
+
+    showModal({
+      title: `견적 상세 — ${quotNo}`,
+      size: 'lg',
+      body: `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;font-size:13px">
+          ${infoRow('견적일', fmtDate(h['견적일']))}
+          ${infoRow('공급사', h['공급사명'])}
+          ${infoRow('프로젝트', h['프로젝트명']||'—')}
+          ${infoRow('담당자', h['담당자명']||'—')}
+          ${infoRow('유효기간', fmtDate(h['유효기간'])||'—')}
+          ${infoRow('상태', badgeStatus(h['상태']))}
+          ${h['비고'] ? infoRow('비고', h['비고'], true) : ''}
+        </div>
+        <div class="line-table-wrap">
+          <table class="line-table">
+            <thead><tr>
+              <th>No.</th><th>구분</th><th>품번</th><th>품명</th><th>모델명</th>
+              <th>수량</th><th>단위</th><th style="text-align:right">단가</th>
+              <th>통화</th><th style="text-align:right">소계</th>
+            </tr></thead>
+            <tbody>
+              ${lines.map((l,i) => `
+              <tr>
+                <td style="text-align:center;color:var(--text3)">${i+1}</td>
+                <td>${l['구분']?`<span class="badge badge-gray">${l['구분']}</span>`:''}</td>
+                <td class="td-mono" style="font-size:11px">${l['ItemNo']||''}</td>
+                <td><strong>${l['품명']||''}</strong></td>
+                <td class="td-muted">${l['모델명']||''}</td>
+                <td style="text-align:right">${l['수량']||0}</td>
+                <td class="td-muted">${l['단위']||''}</td>
+                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">${Number(l['견적단가']||0).toLocaleString()}</td>
+                <td class="td-muted">${l['통화']||''}</td>
+                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
+                  ${(Number(l['견적단가'])*Number(l['수량'])).toLocaleString()}
+                </td>
+              </tr>`).join('')}
+              <tr style="background:var(--bg3)">
+                <td colspan="9" style="text-align:right;font-weight:600;padding:10px 14px">합계</td>
+                <td style="text-align:right;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--accent)">
+                  ${total.toLocaleString()}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`,
+      onConfirm: async () => {
+        // 수정 버튼 역할: 등록 화면으로 이동하며 데이터 채우기
+        closeModal();
+        editQuotation(h, lines);
+      }
+    });
+    // 모달 confirm 버튼을 "수정"으로 변경
+    const btn = document.getElementById('modal-confirm-btn');
+    if (btn) btn.textContent = '✏️ 수정';
+  } catch(e) {
+    showToast('상세 조회 실패','error');
+  }
+}
+
+function editQuotation(h, lines) {
+  navigate('reg-quotation');
+  setTimeout(() => {
+    // 헤더 값 채우기
+    setVal('q-date',   fmtDate(h['견적일']));
+    setVal('q-expire', fmtDate(h['유효기간']));
+    setVal('q-note',   h['비고']||'');
+    setSelectByVal('q-vendor',  h['공급사ID']);
+    setSelectByVal('q-project', h['프로젝트ID']);
+    setSelectByVal('q-staff',   h['담당자ID']);
+    setSelectByVal('q-status',  h['상태']);
+
+    // 라인 초기화 후 채우기
+    document.getElementById('quot-lines').innerHTML = '';
+    _quotLineIdx = 0;
+    lines.forEach(l => addQuotLine(l));
+
+    // 저장 버튼을 수정 모드로
+    const saveBtn = document.querySelector('.btn-success');
+    if (saveBtn) {
+      saveBtn.textContent = '💾 수정 저장';
+      saveBtn.onclick = () => submitQuotation(h['QuotNo']);
+    }
+    showToast('수정 모드: 내용을 변경 후 저장하세요', 'info');
+  }, 100);
+}
+
+async function deleteQuot(quotNo) {
+  if (!confirm(`견적 ${quotNo}을 삭제하시겠습니까?\n연결된 품목 라인도 모두 삭제됩니다.`)) return;
+  try {
+    await api({ action: 'deleteQuot', quotNo });
+    showToast('견적이 삭제되었습니다');
+    loadQuotList();
+  } catch(e) { showToast('삭제 실패','error'); }
+}
+
+// ═══════════════════════════════════════════════════════
+// 구매/판매 목록 (공통)
+// ═══════════════════════════════════════════════════════
+async function renderListPurchase(el) { renderListSalesPage(el, '구매'); }
+async function renderListSales(el)    { renderListSalesPage(el, '판매'); }
+
+function renderListSalesPage(el, type) {
+  const icon = type === '구매' ? '📥' : '📤';
+  el.innerHTML = `
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">${icon} ${type} 목록</div>
+      <button class="btn btn-primary btn-sm" onclick="navigate('reg-${type==='구매'?'purchase':'sales'}')">+ ${type} 등록</button>
+    </div>
+    <div class="search-bar">
+      <div class="search-input-wrap">
+        <span class="search-icon">🔍</span>
+        <input class="search-input" id="slist-search" placeholder="거래번호, 거래처, 프로젝트 검색...">
+      </div>
+      <select class="form-select" id="slist-status" style="width:120px">
+        <option value="">전체 상태</option>
+        <option value="확정">확정</option>
+        <option value="진행중">진행중</option>
+        <option value="취소">취소</option>
+      </select>
+      <button class="btn btn-secondary btn-sm" onclick="loadSalesList('${type}')">검색</button>
+    </div>
+    <div id="slist-table">
+      <div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
+    </div>
+  </div>`;
+
+  document.getElementById('slist-search').addEventListener('keydown', e => {
+    if (e.key === 'Enter') loadSalesList(type);
+  });
+  loadSalesList(type);
+}
+
+async function loadSalesList(type) {
+  const el = document.getElementById('slist-table');
+  if (!el) return;
+  el.innerHTML = `<div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>`;
+  try {
+    const filter = { type };
+    const kw     = document.getElementById('slist-search')?.value.trim();
+    const status = document.getElementById('slist-status')?.value;
+    if (kw)     filter.keyword = kw;
+    if (status) filter.status  = status;
+
+    const d    = await api({ action: 'getSales', filter });
+    const rows = d.rows || [];
+    if (!rows.length) {
+      el.innerHTML = `<div class="table-empty">${type} 데이터가 없습니다</div>`; return;
+    }
+    el.innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>거래번호</th><th>거래일</th><th>거래처</th><th>프로젝트</th>
+        <th>담당자</th><th>연결견적</th><th>발주번호</th>
+        <th style="text-align:center">품목수</th>
+        <th style="text-align:right">합계(참고)</th>
+        <th>상태</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r => `
+        <tr>
+          <td class="td-mono" style="cursor:pointer;color:var(--accent)" onclick="openSalesDetail('${r['SalesNo']}')">${r['SalesNo']}</td>
+          <td class="td-muted">${fmtDate(r['거래일'])}</td>
+          <td><strong>${r['거래처명']||''}</strong></td>
+          <td class="td-muted">${r['프로젝트명']||'—'}</td>
+          <td class="td-muted">${r['담당자명']||'—'}</td>
+          <td class="td-mono" style="font-size:11px;cursor:pointer;color:var(--text2)"
+              ${r['연결견적No'] ? `onclick="openQuotDetail('${r['연결견적No']}')" title="견적 상세 보기"` : ''}>
+            ${r['연결견적No']||'—'}
+          </td>
+          <td class="td-muted text-sm">${r['발주번호']||'—'}</td>
+          <td style="text-align:center">${r['lineCount']||0}</td>
+          <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
+            ${r['totalAmount'] ? Number(r['totalAmount']).toLocaleString() : '—'}
+          </td>
+          <td>${badgeStatus(r['상태'])}</td>
+          <td>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick="openSalesDetail('${r['SalesNo']}')">상세</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteSales('${r['SalesNo']}','${type}')">삭제</button>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+    <div style="padding:10px 14px;font-size:11px;color:var(--text3)">총 ${rows.length}건</div>`;
+  } catch(e) {
+    el.innerHTML = '<div class="table-empty">로드 실패</div>';
+  }
+}
+
+async function openSalesDetail(salesNo) {
+  try {
+    const d = await api({ action: 'getSalesDetail', salesNo });
+    if (!d.ok) { showToast('상세 로드 실패','error'); return; }
+    const h = d.header;
+    const lines = d.lines || [];
+    const total = lines.reduce((s,l) => s + (Number(l['확정단가'])*Number(l['수량'])||0), 0);
+
+    showModal({
+      title: `${h['거래유형']} 상세 — ${salesNo}`,
+      size: 'lg',
+      body: `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;font-size:13px">
+          ${infoRow('거래일', fmtDate(h['거래일']))}
+          ${infoRow('거래유형', badgeStatus(h['거래유형']))}
+          ${infoRow('거래처', h['거래처명'])}
+          ${infoRow('프로젝트', h['프로젝트명']||'—')}
+          ${infoRow('담당자', h['담당자명']||'—')}
+          ${infoRow('발주번호', h['발주번호']||'—')}
+          ${h['연결견적No'] ? infoRow('연결견적', `<span style="cursor:pointer;color:var(--accent)" onclick="closeModal();openQuotDetail('${h['연결견적No']}')">${h['연결견적No']}</span>`) : ''}
+          ${infoRow('상태', badgeStatus(h['상태']))}
+          ${h['비고'] ? infoRow('비고', h['비고'], true) : ''}
+        </div>
+        <div class="line-table-wrap">
+          <table class="line-table">
+            <thead><tr>
+              <th>No.</th><th>구분</th><th>품번</th><th>품명</th><th>모델명</th>
+              <th>수량</th><th>단위</th><th style="text-align:right">단가</th>
+              <th>통화</th><th style="text-align:right">소계</th>
+            </tr></thead>
+            <tbody>
+              ${lines.map((l,i) => `
+              <tr>
+                <td style="text-align:center;color:var(--text3)">${i+1}</td>
+                <td>${l['구분']?`<span class="badge badge-gray">${l['구분']}</span>`:''}</td>
+                <td class="td-mono" style="font-size:11px">${l['ItemNo']||''}</td>
+                <td><strong>${l['품명']||''}</strong></td>
+                <td class="td-muted">${l['모델명']||''}</td>
+                <td style="text-align:right">${l['수량']||0}</td>
+                <td class="td-muted">${l['단위']||''}</td>
+                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">${Number(l['확정단가']||0).toLocaleString()}</td>
+                <td class="td-muted">${l['통화']||''}</td>
+                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
+                  ${(Number(l['확정단가'])*Number(l['수량'])).toLocaleString()}
+                </td>
+              </tr>`).join('')}
+              <tr style="background:var(--bg3)">
+                <td colspan="9" style="text-align:right;font-weight:600;padding:10px 14px">합계</td>
+                <td style="text-align:right;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--accent)">
+                  ${total.toLocaleString()}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`,
+      onConfirm: async () => {
+        closeModal();
+        editSales(h, lines);
+      }
+    });
+    const btn = document.getElementById('modal-confirm-btn');
+    if (btn) btn.textContent = '✏️ 수정';
+  } catch(e) {
+    showToast('상세 조회 실패','error');
+  }
+}
+
+function editSales(h, lines) {
+  const type = h['거래유형'];
+  navigate(type === '구매' ? 'reg-purchase' : 'reg-sales');
+  setTimeout(() => {
+    setVal('s-date',   fmtDate(h['거래일']));
+    setVal('s-po',     h['발주번호']||'');
+    setVal('s-quotno', h['연결견적No']||'');
+    setVal('s-note',   h['비고']||'');
+    setSelectByVal('s-vendor',  h['거래처ID']);
+    setSelectByVal('s-project', h['프로젝트ID']);
+    setSelectByVal('s-staff',   h['담당자ID']);
+    setSelectByVal('s-status',  h['상태']);
+
+    document.getElementById('sales-lines').innerHTML = '';
+    _salesLineIdx = 0;
+    lines.forEach(l => addSalesLine(l));
+
+    const saveBtn = document.querySelector('.btn-success');
+    if (saveBtn) {
+      saveBtn.textContent = '💾 수정 저장';
+      saveBtn.onclick = () => submitSales(type, h['SalesNo']);
+    }
+    showToast('수정 모드: 내용을 변경 후 저장하세요', 'info');
+  }, 100);
+}
+
+async function deleteSales(salesNo, type) {
+  if (!confirm(`${type} ${salesNo}을 삭제하시겠습니까?`)) return;
+  try {
+    await api({ action: 'deleteSales', salesNo });
+    showToast(`${type} 내역이 삭제되었습니다`);
+    loadSalesList(type);
+  } catch(e) { showToast('삭제 실패','error'); }
+}
+
+// ═══════════════════════════════════════════════════════
+// UTILS (파트2 추가)
+// ═══════════════════════════════════════════════════════
+function infoRow(label, value, full = false) {
+  return `
+    <div style="${full?'grid-column:1/-1':''}">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:3px">${label}</div>
+      <div style="font-size:13px">${value||'—'}</div>
+    </div>`;
+}
+
+function badgeStatus(v) {
+  const map = {
+    '진행중': 'badge-blue', '완료': 'badge-green', '취소': 'badge-red',
+    '확정': 'badge-green',  '보류': 'badge-yellow',
+    '구매': 'badge-orange', '판매': 'badge-blue',
+  };
+  return v ? `<span class="badge ${map[v]||'badge-gray'}">${v}</span>` : '';
+}
+
+function setVal(id, v) {
+  const el = document.getElementById(id);
+  if (el) el.value = v || '';
+}
+
+function setSelectByVal(id, v) {
+  const el = document.getElementById(id);
+  if (!el || !v) return;
+  for (let i = 0; i < el.options.length; i++) {
+    if (el.options[i].value === v) { el.selectedIndex = i; return; }
+  }
 }
 
 // ═══════════════════════════════════════════════════════
