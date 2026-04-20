@@ -454,22 +454,37 @@ tbody td { padding: 10px 14px; color: var(--text); vertical-align: middle; }
 
 /* LINE TABLE (견적/판매 입력용) */
 .line-table-wrap { border: 1px solid var(--border2); border-radius: var(--radius); overflow: hidden; }
-.line-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.line-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 .line-table th {
   background: var(--bg3); padding: 8px 10px;
   border-bottom: 1px solid var(--border2);
   font-size: 11px; color: var(--text2); text-align: left; white-space: nowrap;
+  position: relative; user-select: none; overflow: hidden;
 }
-.line-table td { padding: 6px 6px; border-bottom: 1px solid var(--border2); }
+.line-table td { padding: 6px 6px; border-bottom: 1px solid var(--border2); overflow: hidden; }
 .line-table tr:last-child td { border-bottom: none; }
 .line-table .form-input,
-.line-table .form-select { padding: 5px 8px; font-size: 12px; }
+.line-table .form-select { padding: 5px 8px; font-size: 12px; width: 100%; box-sizing: border-box; }
 .line-del-btn {
   background: none; border: none; color: var(--text3);
   font-size: 16px; padding: 2px 6px;
   transition: color var(--transition);
 }
 .line-del-btn:hover { color: var(--red-light); }
+
+/* 컬럼 리사이저 핸들 */
+.col-resizer {
+  position: absolute; right: 0; top: 0; bottom: 0;
+  width: 6px; cursor: col-resize; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.col-resizer::after {
+  content: ''; display: block; width: 2px; height: 60%;
+  background: var(--border); border-radius: 2px; transition: background 0.15s;
+}
+.col-resizer:hover::after,
+.col-resizer.resizing::after { background: var(--accent); }
+body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* MISC */
 .section-title {
@@ -1757,10 +1772,11 @@ function renderRegQuotation(el, prefill = null) {
       <div class="section-title" style="margin:0">품목 명세</div>
       <button class="btn btn-secondary btn-sm" onclick="addQuotLine()">+ 품목 추가</button>
       <span style="font-size:11px;color:var(--text3);margin-left:4px">MasterDB에서 선택하거나 직접 입력</span>
+      <button class="btn btn-secondary btn-sm" style="margin-left:auto;font-size:11px;color:var(--text3)" onclick="resetColWidths('quot-line-table')" title="저장된 컬럼 너비 초기화">↺ 컬럼 초기화</button>
     </div>
     <div style="overflow-x:auto;margin-bottom:20px">
     <div class="line-table-wrap" style="min-width:1100px">
-      <table class="line-table">
+      <table class="line-table" data-resize-id="quot-line-table">
         <thead><tr>
           <th style="width:36px">No.</th>
           <th style="width:110px">구분</th>
@@ -2099,10 +2115,11 @@ function renderRegSalesForm(el, type) {
     <div class="flex items-center gap-2 mb-4">
       <div class="section-title" style="margin:0">품목 명세</div>
       <button class="btn btn-secondary btn-sm" onclick="addSalesLine()">+ 품목 추가</button>
+      <button class="btn btn-secondary btn-sm" style="margin-left:auto;font-size:11px;color:var(--text3)" onclick="resetColWidths('sales-line-table')" title="저장된 컬럼 너비 초기화">↺ 컬럼 초기화</button>
     </div>
     <div style="overflow-x:auto;margin-bottom:20px">
     <div class="line-table-wrap" style="min-width:900px">
-      <table class="line-table">
+      <table class="line-table" data-resize-id="sales-line-table">
         <thead><tr>
           <th style="width:36px">No.</th>
           <th style="width:110px">구분</th>
@@ -2796,6 +2813,128 @@ function badgeVendorType(v) {
 function badgeProjectStatus(v) {
   const map = { '진행중': 'badge-green', '완료': 'badge-gray', '보류': 'badge-yellow' };
   return `<span class="badge ${map[v]||'badge-gray'}">${v||''}</span>`;
+}
+
+// ═══════════════════════════════════════════════════════
+// COLUMN RESIZE ENGINE
+// ─ localStorage 키: sgintech_col_<tableId>_<colIndex>
+// ─ 테이블에 data-resize-id="tableId" 속성 필요
+// ═══════════════════════════════════════════════════════
+const COL_LS_PREFIX = 'sgintech_col_';
+
+// 저장된 너비 불러오기
+function loadColWidths(tableId) {
+  try {
+    const raw = localStorage.getItem(COL_LS_PREFIX + tableId);
+    return raw ? JSON.parse(raw) : {};
+  } catch(e) { return {}; }
+}
+
+// 너비 저장
+function saveColWidths(tableId, widths) {
+  try {
+    localStorage.setItem(COL_LS_PREFIX + tableId, JSON.stringify(widths));
+  } catch(e) {}
+}
+
+// 테이블에 리사이즈 핸들 부착 + 저장된 너비 복원
+function initResizableTable(table) {
+  if (!table || table._resizeInited) return;
+  table._resizeInited = true;
+
+  const tableId = table.getAttribute('data-resize-id');
+  if (!tableId) return;
+
+  const ths = table.querySelectorAll('thead th');
+  const saved = loadColWidths(tableId);
+
+  ths.forEach((th, i) => {
+    // 저장된 너비 복원
+    if (saved[i]) {
+      th.style.width = saved[i] + 'px';
+      th.style.minWidth = saved[i] + 'px';
+    }
+
+    // 마지막 컬럼(액션버튼)은 리사이즈 제외
+    if (i === ths.length - 1) return;
+
+    // 핸들 생성
+    const handle = document.createElement('div');
+    handle.className = 'col-resizer';
+    handle.title = '드래그하여 너비 조절';
+    th.appendChild(handle);
+
+    let startX, startW, widths = {};
+
+    handle.addEventListener('mousedown', e => {
+      e.preventDefault();
+      startX = e.clientX;
+      startW = th.offsetWidth;
+      handle.classList.add('resizing');
+      document.body.classList.add('col-resizing');
+
+      // 현재 전체 너비 스냅샷
+      ths.forEach((t, idx) => { widths[idx] = t.offsetWidth; });
+
+      const onMove = e => {
+        const diff = e.clientX - startX;
+        const newW = Math.max(40, startW + diff);
+        th.style.width    = newW + 'px';
+        th.style.minWidth = newW + 'px';
+        widths[i] = newW;
+      };
+
+      const onUp = () => {
+        handle.classList.remove('resizing');
+        document.body.classList.remove('col-resizing');
+        // 저장
+        ths.forEach((t, idx) => { widths[idx] = t.offsetWidth; });
+        saveColWidths(tableId, widths);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
+// 리사이즈 초기화 - 테이블이 DOM에 추가된 후 호출
+function initAllResizableTables() {
+  document.querySelectorAll('table[data-resize-id]').forEach(initResizableTable);
+}
+
+// MutationObserver로 동적 테이블 자동 감지
+(function() {
+  const obs = new MutationObserver(mutations => {
+    mutations.forEach(m => {
+      m.addedNodes.forEach(node => {
+        if (node.nodeType !== 1) return;
+        // 추가된 노드 자체가 테이블이거나, 내부에 테이블이 있는 경우
+        if (node.matches && node.matches('table[data-resize-id]')) {
+          initResizableTable(node);
+        } else if (node.querySelectorAll) {
+          node.querySelectorAll('table[data-resize-id]').forEach(initResizableTable);
+        }
+      });
+    });
+  });
+  obs.observe(document.body, { childList: true, subtree: true });
+})();
+
+// 컬럼 너비 초기화 (리셋 버튼용)
+function resetColWidths(tableId) {
+  try { localStorage.removeItem(COL_LS_PREFIX + tableId); } catch(e) {}
+  const table = document.querySelector(`table[data-resize-id="${tableId}"]`);
+  if (!table) return;
+  table.querySelectorAll('thead th').forEach(th => {
+    th.style.width = '';
+    th.style.minWidth = '';
+  });
+  table._resizeInited = false;
+  initResizableTable(table);
+  showToast('컬럼 너비가 초기화되었습니다');
 }
 
 // ═══════════════════════════════════════════════════════
