@@ -494,6 +494,20 @@ tbody td { padding: 10px 14px; color: var(--text); vertical-align: middle; }
 </head>
 <body>
 
+<!-- 구분 자동완성 datalist -->
+<datalist id="type-list">
+  <option value="Parts">
+  <option value="Equipment">
+  <option value="자동창고">
+  <option value="소물">
+  <option value="공용재">
+  <option value="WES">
+  <option value="운송">
+  <option value="외주">
+  <option value="인건비">
+  <option value="기타">
+</datalist>
+
 <!-- ══════════════════════════════════════════════════
      TOAST
 ══════════════════════════════════════════════════ -->
@@ -1744,35 +1758,81 @@ function renderRegQuotation(el, prefill = null) {
       <button class="btn btn-secondary btn-sm" onclick="addQuotLine()">+ 품목 추가</button>
       <span style="font-size:11px;color:var(--text3);margin-left:4px">MasterDB에서 선택하거나 직접 입력</span>
     </div>
-    <div class="line-table-wrap" style="margin-bottom:20px">
+    <div style="overflow-x:auto;margin-bottom:20px">
+    <div class="line-table-wrap" style="min-width:1100px">
       <table class="line-table">
         <thead><tr>
-          <th style="width:40px">No.</th>
-          <th style="width:80px">구분</th>
-          <th style="width:160px">품번 선택</th>
-          <th>품명</th>
-          <th>모델명</th>
-          <th style="width:70px">수량</th>
-          <th style="width:80px">단위</th>
-          <th style="width:120px">견적단가</th>
-          <th style="width:80px">통화</th>
-          <th style="width:100px">소계</th>
-          <th style="width:36px"></th>
+          <th style="width:36px">No.</th>
+          <th style="width:110px">구분</th>
+          <th style="width:150px">품번 선택</th>
+          <th style="min-width:140px">품명</th>
+          <th style="min-width:110px">모델명</th>
+          <th style="width:60px">수량</th>
+          <th style="width:65px">단위</th>
+          <th style="width:110px">견적단가</th>
+          <th style="width:65px">통화</th>
+          <th style="width:70px">할인율(%)</th>
+          <th style="width:110px">할인단가</th>
+          <th style="width:60px">익율(%)</th>
+          <th style="width:110px">견적가</th>
+          <th style="min-width:90px">비고</th>
+          <th style="width:52px"></th>
         </tr></thead>
         <tbody id="quot-lines"></tbody>
       </table>
     </div>
+    </div>
     <div class="flex" style="justify-content:flex-end; gap:24px; padding:0 4px">
-      <span style="font-size:13px;color:var(--text2)">합계 (참고용)</span>
-      <span style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600" id="quot-total">—</span>
+      <span style="font-size:13px;color:var(--text2)">견적가 합계</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:var(--accent)" id="quot-total">—</span>
     </div>
   </div>`;
 
   // 초기 라인 1개
+  _quotLineIdx = 0;
   addQuotLine();
 }
 
 let _quotLineIdx = 0;
+
+// ── 공통: MasterDB 품명 조회 맵 ──────────────────────────────
+function buildItemNameMap() {
+  const map = {};
+  (CACHE.parts||[]).forEach(p => {
+    const key = (p['품명']||'').trim().toLowerCase();
+    if (key) map[key] = { 모델명: p['모델명']||'', 단가: p['표준단가']||'', 단위: p['단위']||'EA', 구분: 'Parts', no: p['PartNo'] };
+  });
+  (CACHE.equipment||[]).forEach(e => {
+    const key = (e['장비명']||'').trim().toLowerCase();
+    if (key) map[key] = { 모델명: e['모델명']||'', 단가: e['표준단가']||'', 단위: e['단위']||'EA', 구분: 'Equipment', no: e['EquipNo'] };
+  });
+  return map;
+}
+
+// ── 공통: 순번 재계산 ────────────────────────────────────────
+function reindexLines(tbodyId) {
+  const rows = document.querySelectorAll(`#${tbodyId} tr`);
+  rows.forEach((tr, i) => {
+    const noCell = tr.querySelector('.line-no');
+    if (noCell) noCell.textContent = i + 1;
+  });
+}
+
+// ── 공통: 드래그 or ▲▼ 이동 ─────────────────────────────────
+function moveLineUp(tbodyId, rowId) {
+  const tr   = document.getElementById(rowId);
+  const prev = tr?.previousElementSibling;
+  if (tr && prev) { tr.parentNode.insertBefore(tr, prev); reindexLines(tbodyId); recalcAll(tbodyId); }
+}
+function moveLineDown(tbodyId, rowId) {
+  const tr   = document.getElementById(rowId);
+  const next = tr?.nextElementSibling;
+  if (tr && next) { tr.parentNode.insertBefore(next, tr); reindexLines(tbodyId); recalcAll(tbodyId); }
+}
+function recalcAll(tbodyId) {
+  if (tbodyId === 'quot-lines')  calcQuotTotal();
+  if (tbodyId === 'sales-lines') calcSalesTotal();
+}
 
 function addQuotLine(data = {}) {
   const tbody = document.getElementById('quot-lines');
@@ -1780,67 +1840,122 @@ function addQuotLine(data = {}) {
   const idx = _quotLineIdx++;
   const currOpts = (CACHE.currency||[]).map(c =>
     `<option value="${c['통화코드']}" ${(data['통화']||'KRW')===c['통화코드']?'selected':''}>${c['통화코드']}</option>`).join('');
-
-  // Parts + Equipment 합쳐서 선택 드롭다운
   const itemOpts = [
-    ...(CACHE.parts||[]).map(p => `<option value="P|${p['PartNo']}" data-name="${p['품명']}" data-model="${p['모델명']||''}" data-unit="${p['단위']||''}" data-type="Parts">P: ${p['PartNo']} - ${p['품명']}</option>`),
-    ...(CACHE.equipment||[]).map(e => `<option value="E|${e['EquipNo']}" data-name="${e['장비명']}" data-model="${e['모델명']||''}" data-unit="${e['단위']||''}" data-type="Equipment">E: ${e['EquipNo']} - ${e['장비명']}</option>`),
+    ...(CACHE.parts||[]).map(p => `<option value="P|${p['PartNo']}|${encodeURIComponent(p['품명']||'')}" data-name="${p['품명']}" data-model="${p['모델명']||''}" data-unit="${p['단위']||''}" data-price="${p['표준단가']||''}" data-type="Parts">P: ${p['PartNo']} - ${p['품명']}</option>`),
+    ...(CACHE.equipment||[]).map(e => `<option value="E|${e['EquipNo']}|${encodeURIComponent(e['장비명']||'')}" data-name="${e['장비명']}" data-model="${e['모델명']||''}" data-unit="${e['단위']||''}" data-price="${e['표준단가']||''}" data-type="Equipment">E: ${e['EquipNo']} - ${e['장비명']}</option>`),
   ].join('');
 
   const tr = document.createElement('tr');
   tr.id = `qline-${idx}`;
   tr.innerHTML = `
-    <td style="text-align:center;color:var(--text3);font-size:11px">${idx+1}</td>
-    <td><select class="form-select" id="ql-type-${idx}" style="width:100%">
-      <option value="Parts" ${data['구분']==='Parts'?'selected':''}>Parts</option>
-      <option value="Equipment" ${data['구분']==='Equipment'?'selected':''}>Equipment</option>
-      <option value="기타" ${data['구분']==='기타'?'selected':''}>기타</option>
-    </select></td>
-    <td><select class="form-select" id="ql-item-${idx}" onchange="applyLineItem(${idx})" style="width:100%">
-      <option value="">직접입력</option>${itemOpts}
-    </select></td>
-    <td><input class="form-input" id="ql-name-${idx}" value="${data['품명']||''}" placeholder="품명"></td>
-    <td><input class="form-input" id="ql-model-${idx}" value="${data['모델명']||''}" placeholder="모델명"></td>
-    <td><input class="form-input" type="number" id="ql-qty-${idx}" value="${data['수량']||1}" min="0" oninput="calcQuotTotal()"></td>
-    <td><input class="form-input" id="ql-unit-${idx}" value="${data['단위']||'EA'}" placeholder="EA"></td>
-    <td><input class="form-input" type="number" id="ql-price-${idx}" value="${data['견적단가']||''}" placeholder="0" oninput="calcQuotTotal()"></td>
-    <td><select class="form-select" id="ql-curr-${idx}">${currOpts}</select></td>
-    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;padding-right:10px" id="ql-sub-${idx}">—</td>
-    <td><button class="line-del-btn" onclick="removeQuotLine('qline-${idx}')">✕</button></td>`;
+    <td class="line-no" style="text-align:center;color:var(--text3);font-size:11px;user-select:none"></td>
+    <td>
+      <input class="form-input" id="ql-type-${idx}" value="${data['구분']||''}" placeholder="구분 입력"
+             list="type-list" style="min-width:90px">
+    </td>
+    <td>
+      <select class="form-select" id="ql-item-${idx}" onchange="applyLineItem('quot',${idx})" style="min-width:130px">
+        <option value="">직접입력</option>${itemOpts}
+      </select>
+    </td>
+    <td>
+      <input class="form-input" id="ql-name-${idx}" value="${data['품명']||''}" placeholder="품명"
+             oninput="matchItemByName('quot',${idx},this.value)" style="min-width:120px">
+    </td>
+    <td><input class="form-input" id="ql-model-${idx}" value="${data['모델명']||''}" placeholder="모델명" style="min-width:90px"></td>
+    <td><input class="form-input" type="number" id="ql-qty-${idx}" value="${data['수량']||1}" min="0"
+               oninput="calcQuotRow(${idx})" style="min-width:50px"></td>
+    <td><input class="form-input" id="ql-unit-${idx}" value="${data['단위']||'EA'}" style="min-width:50px"></td>
+    <td><input class="form-input" type="number" id="ql-price-${idx}" value="${data['견적단가']||''}" placeholder="0"
+               oninput="calcQuotRow(${idx})" style="min-width:90px"></td>
+    <td><select class="form-select" id="ql-curr-${idx}" style="min-width:55px">${currOpts}</select></td>
+    <td><input class="form-input" type="number" id="ql-disc-${idx}" value="${data['할인율']||0}" min="0" max="100" placeholder="0"
+               oninput="calcQuotRow(${idx})" style="min-width:55px"></td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;padding-right:8px;color:var(--text2)" id="ql-discprice-${idx}">—</td>
+    <td><input class="form-input" type="number" id="ql-margin-${idx}" value="${data['익율']||0}" min="0" placeholder="0"
+               oninput="calcQuotRow(${idx})" style="min-width:50px"></td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;padding-right:8px;font-weight:600;color:var(--accent)" id="ql-final-${idx}">—</td>
+    <td><input class="form-input" id="ql-note-${idx}" value="${data['비고']||''}" placeholder="비고" style="min-width:70px"></td>
+    <td>
+      <div style="display:flex;flex-direction:column;gap:2px;align-items:center">
+        <button class="line-del-btn" style="font-size:11px;padding:1px 5px" onclick="moveLineUp('quot-lines','qline-${idx}')">▲</button>
+        <button class="line-del-btn" style="font-size:11px;padding:1px 5px" onclick="moveLineDown('quot-lines','qline-${idx}')">▼</button>
+        <button class="line-del-btn" onclick="removeQuotLine('qline-${idx}')">✕</button>
+      </div>
+    </td>`;
   tbody.appendChild(tr);
+  reindexLines('quot-lines');
+  if (data['견적단가'] || data['할인율'] || data['익율']) calcQuotRow(idx);
 }
 
-function applyLineItem(idx) {
-  const sel = document.getElementById(`ql-item-${idx}`);
+function applyLineItem(prefix, idx) {
+  const sel = document.getElementById(`${prefix==='quot'?'ql':'sl'}-item-${idx}`);
   if (!sel || sel.value === '') return;
-  const opt = sel.options[sel.selectedIndex];
-  const [typePrefix] = sel.value.split('|');
-  document.getElementById(`ql-name-${idx}`).value  = opt.getAttribute('data-name') || '';
-  document.getElementById(`ql-model-${idx}`).value = opt.getAttribute('data-model') || '';
-  document.getElementById(`ql-unit-${idx}`).value  = opt.getAttribute('data-unit') || 'EA';
-  document.getElementById(`ql-type-${idx}`).value  = opt.getAttribute('data-type') || 'Parts';
+  const opt  = sel.options[sel.selectedIndex];
+  const p    = prefix === 'quot' ? 'ql' : 'sl';
+  const pkey = prefix === 'quot' ? '견적단가' : '확정단가';
+  document.getElementById(`${p}-name-${idx}`).value  = opt.getAttribute('data-name') || '';
+  document.getElementById(`${p}-model-${idx}`).value = opt.getAttribute('data-model') || '';
+  document.getElementById(`${p}-unit-${idx}`).value  = opt.getAttribute('data-unit') || 'EA';
+  document.getElementById(`${p}-type-${idx}`).value  = opt.getAttribute('data-type') || '';
+  const price = opt.getAttribute('data-price');
+  if (price) document.getElementById(`${p}-price-${idx}`).value = price;
+  if (prefix === 'quot') calcQuotRow(idx); else calcSalesRow(idx);
+}
+
+// 품명 타이핑 → MasterDB 자동매칭
+function matchItemByName(prefix, idx, inputVal) {
+  const map = buildItemNameMap();
+  const key = inputVal.trim().toLowerCase();
+  const hit = map[key];
+  if (!hit) return;
+  const p    = prefix === 'quot' ? 'ql' : 'sl';
+  const modelEl = document.getElementById(`${p}-model-${idx}`);
+  const unitEl  = document.getElementById(`${p}-unit-${idx}`);
+  const priceEl = document.getElementById(`${p}-price-${idx}`);
+  const typeEl  = document.getElementById(`${p}-type-${idx}`);
+  if (modelEl && !modelEl.value) modelEl.value = hit.모델명;
+  if (unitEl  && !unitEl.value)  unitEl.value  = hit.단위;
+  if (priceEl && !priceEl.value) priceEl.value = hit.단가;
+  if (typeEl  && !typeEl.value)  typeEl.value  = hit.구분;
+  if (prefix === 'quot') calcQuotRow(idx); else calcSalesRow(idx);
+}
+
+function calcQuotRow(idx) {
+  const qty    = parseFloat(document.getElementById(`ql-qty-${idx}`)?.value||0);
+  const price  = parseFloat(document.getElementById(`ql-price-${idx}`)?.value||0);
+  const disc   = parseFloat(document.getElementById(`ql-disc-${idx}`)?.value||0);
+  const margin = parseFloat(document.getElementById(`ql-margin-${idx}`)?.value||0);
+  const base      = qty * price;
+  const discPrice = base * (1 - disc / 100);
+  const finalAmt  = discPrice * (1 + margin / 100);
+  const discEl  = document.getElementById(`ql-discprice-${idx}`);
+  const finalEl = document.getElementById(`ql-final-${idx}`);
+  if (discEl)  discEl.textContent  = base > 0 ? discPrice.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
+  if (finalEl) finalEl.textContent = base > 0 ? finalAmt.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
+  calcQuotTotal();
 }
 
 function removeQuotLine(rowId) {
   const el = document.getElementById(rowId);
   if (el) el.remove();
+  reindexLines('quot-lines');
   calcQuotTotal();
 }
 
 function calcQuotTotal() {
-  const rows = document.querySelectorAll('#quot-lines tr');
   let total = 0;
-  rows.forEach(tr => {
-    const id = tr.id.replace('qline-','');
-    const qty   = parseFloat(document.getElementById(`ql-qty-${id}`)?.value||0);
-    const price = parseFloat(document.getElementById(`ql-price-${id}`)?.value||0);
-    const sub   = qty * price;
-    const subEl = document.getElementById(`ql-sub-${id}`);
-    if (subEl) subEl.textContent = sub > 0 ? sub.toLocaleString() : '—';
-    total += sub;
+  document.querySelectorAll('#quot-lines tr').forEach(tr => {
+    const idx = tr.id.replace('qline-','');
+    const qty    = parseFloat(document.getElementById(`ql-qty-${idx}`)?.value||0);
+    const price  = parseFloat(document.getElementById(`ql-price-${idx}`)?.value||0);
+    const disc   = parseFloat(document.getElementById(`ql-disc-${idx}`)?.value||0);
+    const margin = parseFloat(document.getElementById(`ql-margin-${idx}`)?.value||0);
+    const final  = qty * price * (1 - disc/100) * (1 + margin/100);
+    total += final || 0;
   });
-  const totalEl = document.getElementById('quot-total');
-  if (totalEl) totalEl.textContent = total > 0 ? total.toLocaleString() : '—';
+  const el = document.getElementById('quot-total');
+  if (el) el.textContent = total > 0 ? total.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
 }
 
 async function submitQuotation(editQuotNo = null) {
@@ -1865,20 +1980,23 @@ async function submitQuotation(editQuotNo = null) {
 
   const lines = [];
   document.querySelectorAll('#quot-lines tr').forEach(tr => {
-    const id = tr.id.replace('qline-','');
-    const itemSel = document.getElementById(`ql-item-${id}`);
+    const idx = tr.id.replace('qline-','');
+    const itemSel = document.getElementById(`ql-item-${idx}`);
     const itemVal = itemSel ? itemSel.value : '';
-    const [, itemNo] = itemVal.split('|');
+    const parts   = itemVal.split('|');
+    const itemNo  = parts[1] || '';
     lines.push({
-      '구분':    document.getElementById(`ql-type-${id}`)?.value || '',
-      'ItemNo':  itemNo || '',
-      '품명':    document.getElementById(`ql-name-${id}`)?.value || '',
-      '모델명':  document.getElementById(`ql-model-${id}`)?.value || '',
-      '수량':    document.getElementById(`ql-qty-${id}`)?.value || 0,
-      '단위':    document.getElementById(`ql-unit-${id}`)?.value || '',
-      '견적단가':document.getElementById(`ql-price-${id}`)?.value || 0,
-      '통화':    document.getElementById(`ql-curr-${id}`)?.value || 'KRW',
-      '비고': '',
+      '구분':     document.getElementById(`ql-type-${idx}`)?.value || '',
+      'ItemNo':   itemNo,
+      '품명':     document.getElementById(`ql-name-${idx}`)?.value || '',
+      '모델명':   document.getElementById(`ql-model-${idx}`)?.value || '',
+      '수량':     document.getElementById(`ql-qty-${idx}`)?.value || 0,
+      '단위':     document.getElementById(`ql-unit-${idx}`)?.value || '',
+      '견적단가': document.getElementById(`ql-price-${idx}`)?.value || 0,
+      '통화':     document.getElementById(`ql-curr-${idx}`)?.value || 'KRW',
+      '할인율':   document.getElementById(`ql-disc-${idx}`)?.value || 0,
+      '익율':     document.getElementById(`ql-margin-${idx}`)?.value || 0,
+      '비고':     document.getElementById(`ql-note-${idx}`)?.value || '',
     });
   });
 
@@ -1888,12 +2006,11 @@ async function submitQuotation(editQuotNo = null) {
   if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '저장 중...'; }
 
   try {
-    let res;
     if (editQuotNo) {
-      res = await api({ action: 'updateQuot', quotNo: editQuotNo, header, lines });
+      await api({ action: 'updateQuot', quotNo: editQuotNo, header, lines });
       showToast('견적이 수정되었습니다');
     } else {
-      res = await api({ action: 'addQuotation', header, lines });
+      const res = await api({ action: 'addQuotation', header, lines });
       showToast(`견적이 저장되었습니다 (${res.quotNo})`);
     }
     _quotLineIdx = 0;
@@ -1983,23 +2100,26 @@ function renderRegSalesForm(el, type) {
       <div class="section-title" style="margin:0">품목 명세</div>
       <button class="btn btn-secondary btn-sm" onclick="addSalesLine()">+ 품목 추가</button>
     </div>
-    <div class="line-table-wrap" style="margin-bottom:20px">
+    <div style="overflow-x:auto;margin-bottom:20px">
+    <div class="line-table-wrap" style="min-width:900px">
       <table class="line-table">
         <thead><tr>
-          <th style="width:40px">No.</th>
-          <th style="width:80px">구분</th>
-          <th style="width:160px">품번 선택</th>
-          <th>품명</th>
-          <th>모델명</th>
-          <th style="width:70px">수량</th>
-          <th style="width:80px">단위</th>
+          <th style="width:36px">No.</th>
+          <th style="width:110px">구분</th>
+          <th style="width:150px">품번 선택</th>
+          <th style="min-width:140px">품명</th>
+          <th style="min-width:110px">모델명</th>
+          <th style="width:60px">수량</th>
+          <th style="width:65px">단위</th>
           <th style="width:120px">확정단가</th>
-          <th style="width:80px">통화</th>
+          <th style="width:65px">통화</th>
           <th style="width:100px">소계</th>
-          <th style="width:36px"></th>
+          <th style="min-width:90px">비고</th>
+          <th style="width:52px"></th>
         </tr></thead>
         <tbody id="sales-lines"></tbody>
       </table>
+    </div>
     </div>
     <div class="flex" style="justify-content:flex-end; gap:24px; padding:0 4px">
       <span style="font-size:13px;color:var(--text2)">합계 (참고용)</span>
@@ -2021,63 +2141,76 @@ function addSalesLine(data = {}) {
   const currOpts = (CACHE.currency||[]).map(c =>
     `<option value="${c['통화코드']}" ${(data['통화']||'KRW')===c['통화코드']?'selected':''}>${c['통화코드']}</option>`).join('');
   const itemOpts = [
-    ...(CACHE.parts||[]).map(p => `<option value="P|${p['PartNo']}" data-name="${p['품명']}" data-model="${p['모델명']||''}" data-unit="${p['단위']||''}" data-type="Parts">P: ${p['PartNo']} - ${p['품명']}</option>`),
-    ...(CACHE.equipment||[]).map(e => `<option value="E|${e['EquipNo']}" data-name="${e['장비명']}" data-model="${e['모델명']||''}" data-unit="${e['단위']||''}" data-type="Equipment">E: ${e['EquipNo']} - ${e['장비명']}</option>`),
+    ...(CACHE.parts||[]).map(p => `<option value="P|${p['PartNo']}" data-name="${p['품명']}" data-model="${p['모델명']||''}" data-unit="${p['단위']||''}" data-price="${p['표준단가']||''}" data-type="Parts">P: ${p['PartNo']} - ${p['품명']}</option>`),
+    ...(CACHE.equipment||[]).map(e => `<option value="E|${e['EquipNo']}" data-name="${e['장비명']}" data-model="${e['모델명']||''}" data-unit="${e['단위']||''}" data-price="${e['표준단가']||''}" data-type="Equipment">E: ${e['EquipNo']} - ${e['장비명']}</option>`),
   ].join('');
 
   const tr = document.createElement('tr');
   tr.id = `sline-${idx}`;
   tr.innerHTML = `
-    <td style="text-align:center;color:var(--text3);font-size:11px">${idx+1}</td>
-    <td><select class="form-select" id="sl-type-${idx}">
-      <option value="Parts">Parts</option>
-      <option value="Equipment">Equipment</option>
-      <option value="기타">기타</option>
-    </select></td>
-    <td><select class="form-select" id="sl-item-${idx}" onchange="applySalesItem(${idx})">
-      <option value="">직접입력</option>${itemOpts}
-    </select></td>
-    <td><input class="form-input" id="sl-name-${idx}" value="${data['품명']||''}" placeholder="품명"></td>
-    <td><input class="form-input" id="sl-model-${idx}" value="${data['모델명']||''}" placeholder="모델명"></td>
-    <td><input class="form-input" type="number" id="sl-qty-${idx}" value="${data['수량']||1}" min="0" oninput="calcSalesTotal()"></td>
-    <td><input class="form-input" id="sl-unit-${idx}" value="${data['단위']||'EA'}"></td>
-    <td><input class="form-input" type="number" id="sl-price-${idx}" value="${data['확정단가']||''}" placeholder="0" oninput="calcSalesTotal()"></td>
-    <td><select class="form-select" id="sl-curr-${idx}">${currOpts}</select></td>
-    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;padding-right:10px" id="sl-sub-${idx}">—</td>
-    <td><button class="line-del-btn" onclick="removeSalesLine('sline-${idx}')">✕</button></td>`;
+    <td class="line-no" style="text-align:center;color:var(--text3);font-size:11px;user-select:none"></td>
+    <td>
+      <input class="form-input" id="sl-type-${idx}" value="${data['구분']||''}" placeholder="구분 입력"
+             list="type-list" style="min-width:90px">
+    </td>
+    <td>
+      <select class="form-select" id="sl-item-${idx}" onchange="applyLineItem('sales',${idx})" style="min-width:130px">
+        <option value="">직접입력</option>${itemOpts}
+      </select>
+    </td>
+    <td>
+      <input class="form-input" id="sl-name-${idx}" value="${data['품명']||''}" placeholder="품명"
+             oninput="matchItemByName('sales',${idx},this.value)" style="min-width:120px">
+    </td>
+    <td><input class="form-input" id="sl-model-${idx}" value="${data['모델명']||''}" placeholder="모델명" style="min-width:90px"></td>
+    <td><input class="form-input" type="number" id="sl-qty-${idx}" value="${data['수량']||1}" min="0"
+               oninput="calcSalesRow(${idx})" style="min-width:50px"></td>
+    <td><input class="form-input" id="sl-unit-${idx}" value="${data['단위']||'EA'}" style="min-width:50px"></td>
+    <td><input class="form-input" type="number" id="sl-price-${idx}" value="${data['확정단가']||''}" placeholder="0"
+               oninput="calcSalesRow(${idx})" style="min-width:90px"></td>
+    <td><select class="form-select" id="sl-curr-${idx}" style="min-width:55px">${currOpts}</select></td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;padding-right:8px" id="sl-sub-${idx}">—</td>
+    <td><input class="form-input" id="sl-note-${idx}" value="${data['비고']||''}" placeholder="비고" style="min-width:70px"></td>
+    <td>
+      <div style="display:flex;flex-direction:column;gap:2px;align-items:center">
+        <button class="line-del-btn" style="font-size:11px;padding:1px 5px" onclick="moveLineUp('sales-lines','sline-${idx}')">▲</button>
+        <button class="line-del-btn" style="font-size:11px;padding:1px 5px" onclick="moveLineDown('sales-lines','sline-${idx}')">▼</button>
+        <button class="line-del-btn" onclick="removeSalesLine('sline-${idx}')">✕</button>
+      </div>
+    </td>`;
   tbody.appendChild(tr);
+  reindexLines('sales-lines');
 }
 
-function applySalesItem(idx) {
-  const sel = document.getElementById(`sl-item-${idx}`);
-  if (!sel || sel.value === '') return;
-  const opt = sel.options[sel.selectedIndex];
-  document.getElementById(`sl-name-${idx}`).value  = opt.getAttribute('data-name') || '';
-  document.getElementById(`sl-model-${idx}`).value = opt.getAttribute('data-model') || '';
-  document.getElementById(`sl-unit-${idx}`).value  = opt.getAttribute('data-unit') || 'EA';
-  document.getElementById(`sl-type-${idx}`).value  = opt.getAttribute('data-type') || 'Parts';
+function calcSalesRow(idx) {
+  const qty   = parseFloat(document.getElementById(`sl-qty-${idx}`)?.value||0);
+  const price = parseFloat(document.getElementById(`sl-price-${idx}`)?.value||0);
+  const sub   = qty * price;
+  const subEl = document.getElementById(`sl-sub-${idx}`);
+  if (subEl) subEl.textContent = sub > 0 ? sub.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
+  calcSalesTotal();
 }
 
 function removeSalesLine(rowId) {
   const el = document.getElementById(rowId);
   if (el) el.remove();
+  reindexLines('sales-lines');
   calcSalesTotal();
 }
 
 function calcSalesTotal() {
   let total = 0;
   document.querySelectorAll('#sales-lines tr').forEach(tr => {
-    const id    = tr.id.replace('sline-','');
-    const qty   = parseFloat(document.getElementById(`sl-qty-${id}`)?.value||0);
-    const price = parseFloat(document.getElementById(`sl-price-${id}`)?.value||0);
-    const sub   = qty * price;
-    const subEl = document.getElementById(`sl-sub-${id}`);
-    if (subEl) subEl.textContent = sub > 0 ? sub.toLocaleString() : '—';
-    total += sub;
+    const idx   = tr.id.replace('sline-','');
+    const qty   = parseFloat(document.getElementById(`sl-qty-${idx}`)?.value||0);
+    const price = parseFloat(document.getElementById(`sl-price-${idx}`)?.value||0);
+    total += qty * price || 0;
   });
-  const totalEl = document.getElementById('sales-total');
-  if (totalEl) totalEl.textContent = total > 0 ? total.toLocaleString() : '—';
+  const el = document.getElementById('sales-total');
+  if (el) el.textContent = total > 0 ? total.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
 }
+
+function applySalesItem(idx) { applyLineItem('sales', idx); }
 
 async function submitSales(type, editSalesNo = null) {
   const date   = val('s-date');
@@ -2114,7 +2247,7 @@ async function submitSales(type, editSalesNo = null) {
       '단위':     document.getElementById(`sl-unit-${id}`)?.value || '',
       '확정단가': document.getElementById(`sl-price-${id}`)?.value || 0,
       '통화':     document.getElementById(`sl-curr-${id}`)?.value || 'KRW',
-      '비고': '',
+      '비고':     document.getElementById(`sl-note-${id}`)?.value || '',
     });
   });
 
@@ -2232,7 +2365,11 @@ async function openQuotDetail(quotNo) {
     if (!d.ok) { showToast('상세 로드 실패','error'); return; }
     const h = d.header;
     const lines = d.lines || [];
-    const total = lines.reduce((s, l) => s + (Number(l['견적단가']) * Number(l['수량']) || 0), 0);
+    const total = lines.reduce((s, l) => {
+      const qty = Number(l['수량']||0), price = Number(l['견적단가']||0);
+      const disc = Number(l['할인율']||0), margin = Number(l['익율']||0);
+      return s + qty * price * (1 - disc/100) * (1 + margin/100);
+    }, 0);
 
     showModal({
       title: `견적 상세 — ${quotNo}`,
@@ -2251,11 +2388,21 @@ async function openQuotDetail(quotNo) {
           <table class="line-table">
             <thead><tr>
               <th>No.</th><th>구분</th><th>품번</th><th>품명</th><th>모델명</th>
-              <th>수량</th><th>단위</th><th style="text-align:right">단가</th>
-              <th>통화</th><th style="text-align:right">소계</th>
+              <th>수량</th><th>단위</th><th style="text-align:right">견적단가</th>
+              <th>통화</th><th style="text-align:right">할인율</th>
+              <th style="text-align:right">할인단가</th><th style="text-align:right">익율</th>
+              <th style="text-align:right">견적가</th><th>비고</th>
             </tr></thead>
             <tbody>
-              ${lines.map((l,i) => `
+              ${lines.map((l,i) => {
+                const qty   = Number(l['수량']||0);
+                const price = Number(l['견적단가']||0);
+                const disc  = Number(l['할인율']||0);
+                const margin= Number(l['익율']||0);
+                const base  = qty * price;
+                const discP = base * (1 - disc/100);
+                const final = discP * (1 + margin/100);
+                return `
               <tr>
                 <td style="text-align:center;color:var(--text3)">${i+1}</td>
                 <td>${l['구분']?`<span class="badge badge-gray">${l['구분']}</span>`:''}</td>
@@ -2266,15 +2413,18 @@ async function openQuotDetail(quotNo) {
                 <td class="td-muted">${l['단위']||''}</td>
                 <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">${Number(l['견적단가']||0).toLocaleString()}</td>
                 <td class="td-muted">${l['통화']||''}</td>
-                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
-                  ${(Number(l['견적단가'])*Number(l['수량'])).toLocaleString()}
-                </td>
-              </tr>`).join('')}
+                <td style="text-align:right;color:var(--yellow-light)">${disc ? disc+'%' : '—'}</td>
+                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text2)">${base>0?discP.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</td>
+                <td style="text-align:right;color:var(--orange-light)">${margin ? margin+'%' : '—'}</td>
+                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:var(--accent)">${base>0?final.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</td>
+                <td class="td-muted" style="font-size:11px">${l['비고']||''}</td>
+              </tr>`;}).join('')}
               <tr style="background:var(--bg3)">
-                <td colspan="9" style="text-align:right;font-weight:600;padding:10px 14px">합계</td>
+                <td colspan="12" style="text-align:right;font-weight:600;padding:10px 14px">견적가 합계</td>
                 <td style="text-align:right;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--accent)">
-                  ${total.toLocaleString()}
+                  ${total.toLocaleString(undefined,{maximumFractionDigits:0})}
                 </td>
+                <td></td>
               </tr>
             </tbody>
           </table>
