@@ -981,6 +981,17 @@ async function deleteSetting(sheet, id, idField, label, reloadFn) {
     reloadFn();
   } catch(e) { showToast('삭제 실패: ' + e.message, 'error'); }
 }
+function deletePartById(btn) {
+  const id    = btn.getAttribute('data-id');
+  const label = btn.getAttribute('data-label') || id;
+  deleteSetting('Parts', id, 'PartNo', label, loadPartsTable);
+}
+function deleteEquipById(btn) {
+  const id    = btn.getAttribute('data-id');
+  const label = btn.getAttribute('data-label') || id;
+  deleteSetting('Equipment', id, 'EquipNo', label, loadEquipTable);
+}
+
 
 function renderSettingsPage(el, config) {
   el.innerHTML = `
@@ -1629,7 +1640,8 @@ function renderPartsRows(rows) {
         <td>
           <div class="flex gap-2">
             <button class="btn btn-secondary btn-sm" onclick='openPartsModal(${JSON.stringify(r)})'>수정</button>
-            <button class="btn btn-danger btn-sm" onclick='deleteSetting("Parts","${r[\'PartNo\']}","PartNo","${r[\'품명\']||r[\'PartNo\']}",loadPartsTable)'>삭제</button>
+            <button class="btn btn-danger btn-sm" onclick="deletePartById(this)"
+              data-id="${r['PartNo']}" data-label="${r['품명']||r['PartNo']}">삭제</button>
           </div>
         </td>
       </tr>`).join('')}
@@ -1813,7 +1825,8 @@ function renderEquipRows(rows) {
         <td>
           <div class="flex gap-2">
             <button class="btn btn-secondary btn-sm" onclick='openEquipModal(${JSON.stringify(r)})'>수정</button>
-            <button class="btn btn-danger btn-sm" onclick='deleteSetting("Equipment","${r['EquipNo']}","EquipNo","${r['장비명']||r['EquipNo']}",loadEquipTable)'>삭제</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteEquipById(this)"
+                    data-id="${r['EquipNo']}" data-label="${r['장비명']||r['EquipNo']}">삭제</button>
           </div>
         </td>
       </tr>`).join('')}
