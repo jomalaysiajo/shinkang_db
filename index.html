@@ -1719,9 +1719,7 @@ function renderRegQuotation(el, prefill = null) {
   <style>
   /* ── 견적 전용 레이아웃 ── */
   .quot-workspace { display:flex; gap:16px; align-items:flex-start; }
-  .quot-left  { flex:0 0 480px; min-width:0; }
   .quot-right { flex:1; min-width:0; }
-  @media(max-width:1200px){ .quot-workspace{flex-direction:column;} .quot-left{flex:none;width:100%;} }
 
   /* 견적서 테이블 (고객용) */
   .ct-table { width:100%; border-collapse:collapse; font-size:12px; }
@@ -1777,6 +1775,11 @@ function renderRegQuotation(el, prefill = null) {
       <div class="card-title">📋 견적 등록</div>
       <div class="flex gap-2">
         <button class="btn btn-secondary btn-sm" onclick="navigate('list-quotation')">← 목록</button>
+        <button class="btn btn-secondary btn-sm" onclick="openQuotSheet()" id="quot-sheet-btn">
+          📄 고객용 견적서
+          <span id="quot-sheet-badge" style="display:none;background:var(--green);color:#fff;
+            border-radius:10px;padding:1px 7px;font-size:10px;margin-left:4px">0</span>
+        </button>
         <button class="btn btn-success btn-sm" id="quot-save-btn" onclick="submitQuotation()">💾 저장</button>
       </div>
     </div>
@@ -1824,39 +1827,9 @@ function renderRegQuotation(el, prefill = null) {
 
   <div class="quot-workspace">
 
-    <!-- ═══ 왼쪽: 고객용 견적서 ═══ -->
-    <div class="quot-left">
-      <div class="card">
-        <div class="card-header" style="margin-bottom:10px">
-          <div class="card-title">📄 고객용 견적서</div>
-          <button class="btn btn-secondary btn-sm" onclick="addQuotClientRow()">+ 항목 추가</button>
-        </div>
-        <div style="overflow-x:auto">
-          <table class="ct-table">
-            <thead><tr>
-              <th style="width:36px">No.</th>
-              <th>품명</th>
-              <th style="width:55px">단위</th>
-              <th style="width:52px">수량</th>
-              <th style="width:100px">단가(₩)</th>
-              <th style="width:110px">금액(₩)</th>
-              <th style="width:32px"></th>
-            </tr></thead>
-            <tbody id="quot-client-rows"></tbody>
-            <tfoot>
-              <tr class="total-row">
-                <td colspan="5" style="text-align:right;font-size:12px;font-weight:600;padding:8px 10px">합  계</td>
-                <td class="ct-amt" id="ct-grand-total" style="padding:8px 8px">—</td>
-                <td></td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- ═══ 오른쪽: 세부내역 + 연결 ═══ -->
-    <div class="quot-right">
+    <!-- ═══ 고객용 견적서 팝업 버튼 ═══ -->
+    <!-- ═══ 오른쪽(전체폭): 세부내역 + 연결 ═══ -->
+    <div class="quot-right" style="width:100%">
 
       <!-- 연결 도구 -->
       <div class="card" style="margin-bottom:14px">
@@ -1920,97 +1893,405 @@ function renderRegQuotation(el, prefill = null) {
   _qLinkRules  = [];   // [{clientRowId, detailRowIds:[]}]
 
   // 초기 행 생성
-  addQuotClientRow();
   addDetailRow();
   // 연결 패널 초기 렌더
   renderLinkRules();
 }
 
-// ─── 고객용 견적서 행 ────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+// 고객용 견적서 팝업
+// ═══════════════════════════════════════════════════════
 let _qClientIdx = 0;
-let _clientRowsData = {};  // rowId → {no, name, unit, qty, price, formula}
+let _qSheetRows = [];
+// 각 행: { id, type:'group'|'item'|'total', no, name, spec, unit, qty, amt, note, linkedAmt }
 
-function addQuotClientRow(data = {}) {
-  const tbody = document.getElementById('quot-client-rows');
-  if (!tbody) return;
-  const idx = _qClientIdx++;
-  const id  = `cr-${idx}`;
-  const tr  = document.createElement('tr');
-  tr.id = id;
-  tr.dataset.rowid = id;
-  tr.innerHTML = `
-    <td class="line-no" style="text-align:center;font-size:11px;color:var(--text3);user-select:none"></td>
-    <td><input class="ct-input" id="cr-name-${idx}" value="${data.name||''}" placeholder="품명"></td>
-    <td><input class="ct-input" id="cr-unit-${idx}" value="${data.unit||''}" placeholder="EA" style="width:50px"></td>
-    <td><input class="ct-input ct-num" id="cr-qty-${idx}" type="number" value="${data.qty||''}" placeholder="0" oninput="calcClientRow(${idx})"></td>
-    <td class="ct-amt" id="cr-unitprice-${idx}" style="cursor:default;font-size:11px">${data.price ? Number(data.price).toLocaleString() : '—'}</td>
-    <td class="ct-amt" id="cr-amt-${idx}">${data.amt ? Number(data.amt).toLocaleString() : '—'}</td>
-    <td>
-      <div style="display:flex;flex-direction:column;gap:2px">
-        <button class="line-del-btn" style="font-size:10px;padding:1px 4px" onclick="moveClientRow('up','${id}')">▲</button>
-        <button class="line-del-btn" style="font-size:10px;padding:1px 4px" onclick="moveClientRow('dn','${id}')">▼</button>
-        <button class="line-del-btn" onclick="removeClientRow('${id}',${idx})">✕</button>
+/* ── 팝업 오픈 ── */
+function openQuotSheet() {
+  // 팝업 오버레이 생성
+  const overlay = document.createElement('div');
+  overlay.id = 'qs-overlay';
+  overlay.style.cssText = `
+    position:fixed; inset:0; background:rgba(0,0,0,0.75); backdrop-filter:blur(3px);
+    z-index:2000; display:flex; align-items:center; justify-content:center; padding:20px;`;
+
+  overlay.innerHTML = `
+  <div style="
+    background:var(--bg2); border:1px solid var(--border);
+    border-radius:12px; width:100%; max-width:900px; max-height:92vh;
+    display:flex; flex-direction:column; box-shadow:0 8px 40px rgba(0,0,0,0.6);
+    animation: slideUp 0.2s ease;">
+
+    <!-- 팝업 헤더 -->
+    <div style="padding:16px 20px; border-bottom:1px solid var(--border2);
+                display:flex; align-items:center; gap:12px; flex-shrink:0;">
+      <div style="font-size:15px; font-weight:700; flex:1">📄 고객용 견적서</div>
+      <div style="font-size:11px; color:var(--text3)">Unit: ￦ (원)</div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-secondary btn-sm" onclick="qsAddGroup()">+ 그룹</button>
+        <button class="btn btn-secondary btn-sm" onclick="qsAddItem()">+ 세부항목</button>
+        <button class="btn btn-primary btn-sm" onclick="closeQuotSheet()">✓ 확인</button>
       </div>
-    </td>`;
-  tbody.appendChild(tr);
-  reindexClientRows();
+    </div>
+
+    <!-- 프로젝트 정보 입력 -->
+    <div style="padding:12px 20px; border-bottom:1px solid var(--border2);
+                display:flex; gap:12px; flex-shrink:0; flex-wrap:wrap; background:var(--bg3);">
+      <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:200px;">
+        <label style="font-size:11px; color:var(--text2); white-space:nowrap;">Plant</label>
+        <input class="form-input" id="qs-plant" placeholder="Plant 명" style="font-size:12px; padding:5px 10px;">
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex:2; min-width:300px;">
+        <label style="font-size:11px; color:var(--text2); white-space:nowrap;">Project Name</label>
+        <input class="form-input" id="qs-projname" placeholder="프로젝트명" style="font-size:12px; padding:5px 10px;">
+      </div>
+    </div>
+
+    <!-- 견적서 테이블 -->
+    <div style="flex:1; overflow-y:auto; padding:16px 20px;">
+      <table style="width:100%; border-collapse:collapse; font-size:12px;" id="qs-table">
+        <colgroup>
+          <col style="width:70px">   <!-- No. -->
+          <col>                       <!-- 품명 -->
+          <col style="width:180px">   <!-- 형번/사양 -->
+          <col style="width:50px">    <!-- 단위 -->
+          <col style="width:65px">    <!-- 수량 -->
+          <col style="width:120px">   <!-- 단가 -->
+          <col style="width:130px">   <!-- 금액 -->
+          <col style="width:130px">   <!-- 비고 -->
+          <col style="width:52px">    <!-- 액션 -->
+        </colgroup>
+        <thead>
+          <tr style="background:var(--bg3);">
+            <th style="padding:8px 8px; border:1px solid var(--border2); font-size:11px; color:var(--text2); text-align:center;">No.</th>
+            <th style="padding:8px 8px; border:1px solid var(--border2); font-size:11px; color:var(--text2); text-align:center;">품명</th>
+            <th style="padding:8px 8px; border:1px solid var(--border2); font-size:11px; color:var(--text2); text-align:center;">형번/사양</th>
+            <th style="padding:8px 8px; border:1px solid var(--border2); font-size:11px; color:var(--text2); text-align:center;">단위</th>
+            <th style="padding:8px 8px; border:1px solid var(--border2); font-size:11px; color:var(--text2); text-align:center;">수량</th>
+            <th style="padding:8px 8px; border:1px solid var(--border2); font-size:11px; color:var(--text2); text-align:center;">단가</th>
+            <th style="padding:8px 8px; border:1px solid var(--border2); font-size:11px; color:var(--text2); text-align:center; background:rgba(37,99,235,0.08);">금액</th>
+            <th style="padding:8px 8px; border:1px solid var(--border2); font-size:11px; color:var(--text2); text-align:center;">비고</th>
+            <th style="padding:8px 8px; border:1px solid var(--border2); font-size:11px; color:var(--text2); text-align:center;"></th>
+          </tr>
+        </thead>
+        <tbody id="qs-tbody"></tbody>
+        <tfoot>
+          <tr style="background:rgba(37,99,235,0.06);">
+            <td colspan="6"
+                style="padding:10px 12px; border:1px solid var(--border2);
+                       font-weight:700; font-size:13px; text-align:center; letter-spacing:0.05em;">
+              합&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;계
+            </td>
+            <td id="qs-total"
+                style="padding:10px 8px; border:1px solid var(--border2);
+                       font-family:'JetBrains Mono',monospace; font-size:13px;
+                       font-weight:700; color:var(--accent); text-align:right;">—</td>
+            <td colspan="2" style="border:1px solid var(--border2);"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <!-- 팝업 푸터 -->
+    <div style="padding:12px 20px; border-top:1px solid var(--border2);
+                display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+      <span style="font-size:11px; color:var(--text3)">
+        💡 그룹행의 금액은 연결된 세부내역 견적가 합계가 자동 반영됩니다
+      </span>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-secondary btn-sm" onclick="closeQuotSheet()">닫기</button>
+        <button class="btn btn-primary btn-sm" onclick="closeQuotSheet()">✓ 확인 & 닫기</button>
+      </div>
+    </div>
+  </div>`;
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeQuotSheet(); });
+
+  // 기존 행 복원
+  renderQsRows();
+  syncQsFromLinks();  // 연결 규칙 반영
 }
 
-function reindexClientRows() {
-  document.querySelectorAll('#quot-client-rows tr').forEach((tr, i) => {
-    const lno = tr.querySelector('.line-no');
-    if (lno) lno.textContent = i + 1;
+function closeQuotSheet() {
+  const el = document.getElementById('qs-overlay');
+  if (el) el.remove();
+  // 배지 업데이트
+  updateQuotSheetBadge();
+}
+
+function updateQuotSheetBadge() {
+  const badge = document.getElementById('quot-sheet-badge');
+  const btn   = document.getElementById('quot-sheet-btn');
+  if (!badge) return;
+  const cnt = _qSheetRows.length;
+  badge.textContent = cnt;
+  badge.style.display = cnt > 0 ? 'inline' : 'none';
+  if (btn) btn.style.borderColor = cnt > 0 ? 'var(--green)' : '';
+}
+
+/* ── 행 렌더링 ── */
+function renderQsRows() {
+  const tbody = document.getElementById('qs-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  _qSheetRows.forEach((row, i) => {
+    const tr = document.createElement('tr');
+    tr.id = 'qs-row-' + row.id;
+    tr.dataset.rowid = row.id;
+
+    if (row.type === 'group') {
+      // 그룹 행: 배경색 + 품명 span 6칸
+      tr.style.background = 'var(--bg3)';
+      tr.innerHTML = `
+        <td style="padding:7px 8px; border:1px solid var(--border2);
+                   text-align:center; font-weight:700; color:var(--accent);
+                   font-family:'JetBrains Mono',monospace; font-size:12px;">
+          <input style="background:transparent;border:none;outline:none;color:var(--accent);
+                        font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;
+                        width:56px;text-align:center;"
+                 id="qs-no-${row.id}" value="${row.no||''}" placeholder="No."
+                 oninput="_qSheetRows[${i}].no=this.value">
+        </td>
+        <td colspan="5" style="padding:7px 8px; border:1px solid var(--border2); font-weight:600; font-size:13px;">
+          <input style="background:transparent;border:none;outline:none;color:var(--text);
+                        font-size:13px;font-weight:600;width:100%;"
+                 id="qs-name-${row.id}" value="${row.name||''}" placeholder="그룹명 (예: Shuttle System)"
+                 oninput="_qSheetRows[${i}].name=this.value">
+        </td>
+        <td style="padding:7px 8px; border:1px solid var(--border2);
+                   background:rgba(37,99,235,0.08); text-align:right;
+                   font-family:'JetBrains Mono',monospace; font-size:12px;
+                   font-weight:700; color:var(--accent);" id="qs-amt-${row.id}">
+          ${row.amt > 0 ? row.amt.toLocaleString(undefined,{maximumFractionDigits:0}) : '—'}
+        </td>
+        <td style="padding:7px 8px; border:1px solid var(--border2);">
+          <input style="background:transparent;border:none;outline:none;color:var(--text2);
+                        font-size:11px;width:100%;"
+                 id="qs-note-${row.id}" value="${row.note||''}" placeholder="비고"
+                 oninput="_qSheetRows[${i}].note=this.value">
+        </td>
+        <td style="padding:4px; border:1px solid var(--border2); text-align:center;">
+          ${qsActionBtns(row.id)}
+        </td>`;
+    } else {
+      // 세부항목 행
+      const unitPrice = (row.qty > 0 && row.amt > 0) ? Math.round(row.amt / row.qty).toLocaleString() : '—';
+      tr.innerHTML = `
+        <td style="padding:6px 8px; border:1px solid var(--border2);
+                   text-align:center; font-size:11px; color:var(--text2);">
+          <input style="background:transparent;border:none;outline:none;color:var(--text2);
+                        font-size:11px;width:56px;text-align:center;"
+                 id="qs-no-${row.id}" value="${row.no||''}" placeholder="No."
+                 oninput="_qSheetRows[${i}].no=this.value">
+        </td>
+        <td style="padding:6px 8px; border:1px solid var(--border2);">
+          <input style="background:transparent;border:none;outline:none;color:var(--text);
+                        font-size:12px;width:100%;"
+                 id="qs-name-${row.id}" value="${row.name||''}" placeholder="품명"
+                 oninput="_qSheetRows[${i}].name=this.value">
+        </td>
+        <td style="padding:6px 8px; border:1px solid var(--border2);">
+          <input style="background:transparent;border:none;outline:none;color:var(--text2);
+                        font-size:11px;width:100%;"
+                 id="qs-spec-${row.id}" value="${row.spec||''}" placeholder="형번/사양"
+                 oninput="_qSheetRows[${i}].spec=this.value">
+        </td>
+        <td style="padding:6px 8px; border:1px solid var(--border2); text-align:center;">
+          <input style="background:transparent;border:none;outline:none;color:var(--text);
+                        font-size:11px;width:44px;text-align:center;"
+                 id="qs-unit-${row.id}" value="${row.unit||''}" placeholder="EA"
+                 oninput="_qSheetRows[${i}].unit=this.value">
+        </td>
+        <td style="padding:6px 8px; border:1px solid var(--border2); text-align:right;">
+          <input style="background:transparent;border:none;outline:none;color:var(--text);
+                        font-size:11px;width:56px;text-align:right;"
+                 type="number" id="qs-qty-${row.id}" value="${row.qty||''}" placeholder="0"
+                 oninput="_qSheetRows[${i}].qty=parseFloat(this.value)||0; qsCalcRow(${i})">
+        </td>
+        <td style="padding:6px 8px; border:1px solid var(--border2); text-align:right;
+                   font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text2);"
+            id="qs-unitprice-${row.id}">${unitPrice}</td>
+        <td style="padding:6px 8px; border:1px solid var(--border2);
+                   background:rgba(37,99,235,0.08); text-align:right;
+                   font-family:'JetBrains Mono',monospace; font-size:12px;
+                   font-weight:600; color:var(--accent);" id="qs-amt-${row.id}">
+          ${row.amt > 0 ? row.amt.toLocaleString(undefined,{maximumFractionDigits:0}) : '—'}
+        </td>
+        <td style="padding:6px 8px; border:1px solid var(--border2);">
+          <input style="background:transparent;border:none;outline:none;color:var(--text2);
+                        font-size:11px;width:100%;"
+                 id="qs-note-${row.id}" value="${row.note||''}" placeholder="비고"
+                 oninput="_qSheetRows[${i}].note=this.value">
+        </td>
+        <td style="padding:4px; border:1px solid var(--border2); text-align:center;">
+          ${qsActionBtns(row.id)}
+        </td>`;
+    }
+    tbody.appendChild(tr);
   });
-  renderLinkRules();  // 연결패널 드롭다운 갱신
+  qsCalcTotal();
 }
 
-function moveClientRow(dir, rowId) {
-  const tr   = document.getElementById(rowId);
-  if (!tr) return;
-  if (dir === 'up') { const p = tr.previousElementSibling; if (p) tr.parentNode.insertBefore(tr, p); }
-  else              { const n = tr.nextElementSibling;     if (n) tr.parentNode.insertBefore(n, tr); }
-  reindexClientRows();
+function qsActionBtns(rowId) {
+  return `<div style="display:flex;flex-direction:column;gap:1px;align-items:center;">
+    <button class="line-del-btn" style="font-size:10px;padding:1px 3px"
+            onclick="qsMoveRow('up','${rowId}')">▲</button>
+    <button class="line-del-btn" style="font-size:10px;padding:1px 3px"
+            onclick="qsMoveRow('dn','${rowId}')">▼</button>
+    <button class="line-del-btn"
+            onclick="qsRemoveRow('${rowId}')">✕</button>
+  </div>`;
+}
+
+/* ── 행 추가 ── */
+function qsAddGroup() {
+  const id = 'g' + (_qClientIdx++);
+  _qSheetRows.push({ id, type:'group', no:'', name:'', spec:'', unit:'', qty:0, amt:0, note:'' });
+  renderQsRows();
+}
+
+function qsAddItem(afterGroupId = null) {
+  const id = 'i' + (_qClientIdx++);
+  // 마지막 그룹 번호 기반으로 세부항목 번호 자동 제안
+  const lastGroup = [..._qSheetRows].reverse().find(r => r.type === 'group');
+  const autoNo   = lastGroup ? (lastGroup.no + '-' + (
+    _qSheetRows.filter(r => r.type==='item' && String(r.no).startsWith(lastGroup.no+'-')).length + 1
+  )) : '';
+  _qSheetRows.push({ id, type:'item', no:autoNo, name:'', spec:'', unit:'EA', qty:1, amt:0, note:'' });
+  renderQsRows();
+}
+
+/* ── 행 조작 ── */
+function qsMoveRow(dir, rowId) {
+  const i = _qSheetRows.findIndex(r => r.id === rowId);
+  if (i < 0) return;
+  if (dir === 'up'  && i > 0)                        { [_qSheetRows[i-1], _qSheetRows[i]] = [_qSheetRows[i], _qSheetRows[i-1]]; }
+  if (dir === 'dn'  && i < _qSheetRows.length - 1)  { [_qSheetRows[i],   _qSheetRows[i+1]] = [_qSheetRows[i+1], _qSheetRows[i]]; }
+  renderQsRows();
+  syncQsFromLinks();
+}
+
+function qsRemoveRow(rowId) {
+  _qSheetRows = _qSheetRows.filter(r => r.id !== rowId);
+  // 연결 규칙에서도 제거
+  _qLinkRules = _qLinkRules.filter(r => r.clientRowId !== rowId);
+  renderQsRows();
+  renderLinkRules();
+  qsCalcTotal();
+}
+
+/* ── 계산 ── */
+function qsCalcRow(i) {
+  const row = _qSheetRows[i];
+  if (!row || row.type !== 'item') return;
+  // 세부항목은 직접 금액 입력(연결) 또는 수량만 있는 경우 단가는 역산
+  // amt는 applyAllLinkRules()가 채우거나, 직접 입력 없으면 0
+  qsUpdateRowDisplay(row.id);
+  qsCalcGroupTotals();
+  qsCalcTotal();
+}
+
+function qsUpdateRowDisplay(rowId) {
+  const row = _qSheetRows.find(r => r.id === rowId);
+  if (!row) return;
+  const amtEl  = document.getElementById('qs-amt-' + rowId);
+  const upEl   = document.getElementById('qs-unitprice-' + rowId);
+  if (amtEl) {
+    amtEl.textContent = row.amt > 0
+      ? row.amt.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
+  }
+  if (upEl && row.type === 'item') {
+    const up = (row.qty > 0 && row.amt > 0) ? Math.round(row.amt / row.qty).toLocaleString() : '—';
+    upEl.textContent = up;
+  }
+}
+
+// 그룹 합계 = 해당 그룹 이후 다음 그룹 전까지 세부항목 합산
+function qsCalcGroupTotals() {
+  let currentGroupIdx = -1;
+  _qSheetRows.forEach((row, i) => {
+    if (row.type === 'group') {
+      currentGroupIdx = i;
+    } else if (row.type === 'item' && currentGroupIdx >= 0) {
+      // 이 item의 그룹 누적은 아래에서 처리
+    }
+  });
+  // 각 그룹별로 소속 item 합산
+  _qSheetRows.forEach((row, i) => {
+    if (row.type !== 'group') return;
+    // 다음 그룹 또는 끝까지의 item들 합산
+    let sum = 0;
+    for (let j = i+1; j < _qSheetRows.length; j++) {
+      if (_qSheetRows[j].type === 'group') break;
+      sum += _qSheetRows[j].amt || 0;
+    }
+    row.amt = sum;
+    const el = document.getElementById('qs-amt-' + row.id);
+    if (el) el.textContent = sum > 0 ? sum.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
+  });
+}
+
+function qsCalcTotal() {
+  const total = _qSheetRows
+    .filter(r => r.type === 'group')
+    .reduce((s, r) => s + (r.amt || 0), 0);
+  // 그룹 없으면 item 합산
+  const total2 = _qSheetRows.every(r => r.type !== 'group')
+    ? _qSheetRows.reduce((s, r) => s + (r.amt || 0), 0) : total;
+  const el = document.getElementById('qs-total');
+  if (el) el.textContent = total2 > 0
+    ? total2.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
+}
+
+/* ── 연결 규칙에서 견적서 금액 자동 반영 ── */
+function applyAllLinkRules() {
+  _qLinkRules.forEach(rule => {
+    if (!rule.clientRowId || !rule.detailRowIds.length) return;
+    let sum = 0;
+    rule.detailRowIds.forEach(dId => {
+      const didx    = dId.replace('dr-', '');
+      const finalEl = document.getElementById('dr-final-' + didx);
+      sum += parseFloat((finalEl?.textContent||'').replace(/,/g,'')) || 0;
+    });
+    // 해당 sheetRow amt 업데이트
+    const row = _qSheetRows.find(r => r.id === rule.clientRowId);
+    if (row) {
+      row.amt = sum;
+      qsUpdateRowDisplay(row.id);
+    }
+  });
+  qsCalcGroupTotals();
+  qsCalcTotal();
+  updateQuotSheetBadge();
+}
+
+// 팝업 열릴 때 현재 연결 규칙 반영
+function syncQsFromLinks() {
   applyAllLinkRules();
 }
 
-function removeClientRow(rowId, idx) {
-  const el = document.getElementById(rowId);
-  if (el) el.remove();
-  // 해당 행 연결 규칙 제거
-  _qLinkRules = _qLinkRules.filter(r => r.clientRowId !== rowId);
-  reindexClientRows();
-  calcClientTotal();
-}
-
-// 단가는 연결된 세부내역 견적가 합 ÷ 수량
-function calcClientRow(idx) {
-  calcClientTotal();
+/* ── 연결 패널: 견적서 행 드롭다운 (팝업 행 기준) ── */
+function reindexClientRows() {
+  // 연결 패널 갱신
+  renderLinkRules();
+  updateQuotSheetBadge();
 }
 
 function setClientRowAmt(rowId, amt) {
-  const idx      = rowId.replace('cr-', '');
-  const qtyEl    = document.getElementById(`cr-qty-${idx}`);
-  const unitEl   = document.getElementById(`cr-unitprice-${idx}`);
-  const amtEl    = document.getElementById(`cr-amt-${idx}`);
-  const qty      = parseFloat(qtyEl?.value || 1);
-  if (amtEl)   amtEl.textContent   = amt > 0 ? amt.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
-  if (unitEl)  unitEl.textContent  = (amt > 0 && qty > 0) ? Math.round(amt / qty).toLocaleString() : '—';
-  calcClientTotal();
+  // 연결 규칙 적용 시 호출 (applyAllLinkRules에서 처리하므로 여기서는 pass)
 }
 
 function calcClientTotal() {
-  let total = 0;
-  document.querySelectorAll('#quot-client-rows tr').forEach(tr => {
-    const amtEl = tr.querySelector('[id^="cr-amt-"]');
-    if (amtEl) {
-      const v = parseInt((amtEl.textContent||'').replace(/,/g,'')) || 0;
-      total += v;
-    }
-  });
-  const el = document.getElementById('ct-grand-total');
-  if (el) el.textContent = total > 0 ? total.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
+  qsCalcGroupTotals();
+  qsCalcTotal();
 }
 
+function getClientRowSeq(rowId) {
+  const idx = _qSheetRows.findIndex(r => r.id === rowId);
+  return idx >= 0 ? idx + 1 : null;
+}
+
+// ─── 세부내역 행 ─────────────────────────────────────────────
 // ─── 세부내역 행 ─────────────────────────────────────────────
 let _qDetailIdx = 0;
 const DETAIL_LS_KEY = 'sgintech_col_detail-table';
@@ -2228,12 +2509,11 @@ function renderLinkRules() {
   const area = document.getElementById('link-rules-area');
   if (!area) return;
 
-  // 고객용 행 목록
-  const clientRows = Array.from(document.querySelectorAll('#quot-client-rows tr')).map((tr, i) => {
-    const idx = tr.id.replace('cr-', '');
-    const nm  = document.getElementById(`cr-name-${idx}`)?.value || `항목 ${i+1}`;
-    return { id: tr.id, label: `[${i+1}] ${nm}` };
-  });
+  // 고객용 행 목록 (_qSheetRows 기준)
+  const clientRows = _qSheetRows.map((row, i) => ({
+    id:    row.id,
+    label: `[${i+1}] ${row.type === 'group' ? '▶ ' : ''}${row.name || (row.type==='group'?'그룹':'항목')+(i+1)}`
+  }));
 
   // 세부내역 행 목록
   const detailRows = Array.from(document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)')).map((tr, i) => {
@@ -2244,7 +2524,10 @@ function renderLinkRules() {
   });
 
   if (_qLinkRules.length === 0) {
-    area.innerHTML = `<div style="font-size:12px;color:var(--text3);padding:4px 0">연결 규칙이 없습니다. 아래 버튼으로 추가하세요.</div>`;
+    area.innerHTML = `<div style="font-size:12px;color:var(--text3);padding:6px 0">
+      연결 규칙이 없습니다. 아래 버튼으로 추가하세요.<br>
+      <span style="font-size:11px;color:var(--text3)">먼저 고객용 견적서에서 행을 추가한 뒤 연결하세요.</span>
+    </div>`;
     return;
   }
 
@@ -2254,32 +2537,34 @@ function renderLinkRules() {
     const dOpts = detailRows.map(r =>
       `<option value="${r.id}" ${rule.detailRowIds.includes(r.id)?'selected':''}>${r.label}</option>`).join('');
 
-    // 수식 미리보기
+    const cLabel = clientRows.find(r=>r.id===rule.clientRowId)?.label || '?';
+    const dLabels = rule.detailRowIds.map(d=>detailRows.find(r=>r.id===d)?.label||'?').join(', ');
     const preview = rule.clientRowId && rule.detailRowIds.length
-      ? `G(${clientRows.find(r=>r.id===rule.clientRowId)?.label||'?'}) = Σ Y(${rule.detailRowIds.map(d=>detailRows.find(r=>r.id===d)?.label||'?').join(', ')})`
+      ? `견적서 "${cLabel}" ← Σ 세부내역 [${dLabels}]`
       : '';
 
     return `
     <div class="link-panel" style="margin-bottom:8px">
       <div class="flex items-center gap-2" style="margin-bottom:8px">
         <span class="link-panel-title" style="margin:0">규칙 ${i+1}</span>
-        <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:11px" onclick="removeLinkRule(${i})">✕ 삭제</button>
+        <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:11px"
+                onclick="removeLinkRule(${i})">✕ 삭제</button>
       </div>
       <div class="link-row">
-        <span style="font-size:11px;color:var(--text2);min-width:60px">견적서 행</span>
-        <select class="form-select" style="font-size:12px;padding:4px 8px;flex:1;max-width:220px"
+        <span style="font-size:11px;color:var(--text2);white-space:nowrap;">견적서 행</span>
+        <select class="form-select" style="font-size:12px;padding:4px 8px;min-width:180px;max-width:240px"
                 onchange="_qLinkRules[${i}].clientRowId=this.value;renderLinkRules();applyAllLinkRules()">
           <option value="">-- 선택 --</option>${cOpts}
         </select>
-        <span class="link-arrow">←</span>
-        <span style="font-size:11px;color:var(--text2);min-width:60px">세부내역 행(복수)</span>
-        <select class="form-select" style="font-size:12px;padding:4px 8px;flex:1;max-width:280px"
+        <span class="link-arrow" style="flex-shrink:0">←</span>
+        <span style="font-size:11px;color:var(--text2);white-space:nowrap;">세부내역</span>
+        <select class="form-select" style="font-size:12px;padding:4px 8px;flex:1;min-width:200px"
                 multiple size="3"
                 onchange="_qLinkRules[${i}].detailRowIds=Array.from(this.selectedOptions).map(o=>o.value);renderLinkRules();applyAllLinkRules()">
           ${dOpts}
         </select>
       </div>
-      ${preview ? `<div class="link-eq-preview">${preview}</div>` : ''}
+      ${preview ? `<div class="link-eq-preview" style="margin-top:6px">${preview}</div>` : ''}
     </div>`;
   }).join('');
 }
@@ -2327,19 +2612,24 @@ async function submitQuotation(editQuotNo = null) {
     '상태': val('q-status'), '파일URL': '',
   };
 
-  // 고객용 견적서 행
-  const clientLines = [];
-  document.querySelectorAll('#quot-client-rows tr').forEach((tr, i) => {
-    const idx = tr.id.replace('cr-', '');
-    clientLines.push({
-      '_type':  'client',
-      '순번':   i + 1,
-      '품명':   document.getElementById(`cr-name-${idx}`)?.value || '',
-      '단위':   document.getElementById(`cr-unit-${idx}`)?.value || '',
-      '수량':   document.getElementById(`cr-qty-${idx}`)?.value  || '',
-      '금액':   (document.getElementById(`cr-amt-${idx}`)?.textContent || '').replace(/,/g,''),
-    });
-  });
+  // 고객용 견적서 행 (_qSheetRows 기준)
+  const sheetMeta = {
+    plant:    document.getElementById('qs-plant')?.value    || '',
+    projname: document.getElementById('qs-projname')?.value || '',
+  };
+  const clientLines = _qSheetRows.map((row, i) => ({
+    '_type':  'client',
+    '_rowtype': row.type,
+    '순번':   i + 1,
+    'No':     row.no   || '',
+    '품명':   row.name || '',
+    '형번':   row.spec || '',
+    '단위':   row.unit || '',
+    '수량':   row.qty  || '',
+    '금액':   row.amt  || 0,
+    '비고':   row.note || '',
+  }));
+  header['sheetMeta'] = JSON.stringify(sheetMeta);
 
   // 세부내역 행
   const detailLines = [];
@@ -2400,11 +2690,7 @@ async function submitQuotation(editQuotNo = null) {
   }
 }
 
-function getClientRowSeq(rowId) {
-  const rows = Array.from(document.querySelectorAll('#quot-client-rows tr'));
-  const idx  = rows.findIndex(tr => tr.id === rowId);
-  return idx >= 0 ? idx + 1 : null;
-}
+// getClientRowSeq: defined above in popup section
 
 function getDetailRowSeq(rowId) {
   const rows = Array.from(document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)'));
