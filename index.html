@@ -586,6 +586,15 @@ body.col-resizing { cursor: col-resize; user-select: none; }
         <div class="nav-item" onclick="navigate('settings-currency')">
           <span class="icon">💱</span> 통화 관리
         </div>
+        <div class="nav-item" onclick="navigate('settings-unit')">
+          <span class="icon">📐</span> 단위 관리
+        </div>
+        <div class="nav-item" onclick="navigate('settings-category')">
+          <span class="icon">🏷️</span> 카테고리 관리
+        </div>
+        <div class="nav-item" onclick="navigate('settings-division')">
+          <span class="icon">📂</span> 구분 관리
+        </div>
       </div>
 
       <div class="nav-section">
@@ -749,16 +758,22 @@ async function tryAutoLogin() {
 // ═══════════════════════════════════════════════════════
 async function loadCache() {
   try {
-    const [s, v, p, c] = await Promise.all([
+    const [s, v, p, c, u, cat, div] = await Promise.all([
       api({ action: 'getSettings', sheet: 'Settings_Staff' }),
       api({ action: 'getSettings', sheet: 'Settings_Vendor' }),
       api({ action: 'getSettings', sheet: 'Settings_Project' }),
       api({ action: 'getSettings', sheet: 'Settings_Currency' }),
+      api({ action: 'getSettings', sheet: 'Settings_Unit' }),
+      api({ action: 'getSettings', sheet: 'Settings_Category' }),
+      api({ action: 'getSettings', sheet: 'Settings_Division' }),
     ]);
-    CACHE.staff    = (s.rows || []).filter(r => r['사용여부'] === 'Y');
-    CACHE.vendor   = (v.rows || []).filter(r => r['사용여부'] === 'Y');
-    CACHE.project  = (p.rows || []).filter(r => r['상태'] !== '완료');
-    CACHE.currency = (c.rows || []).filter(r => r['사용여부'] === 'Y');
+    CACHE.staff    = (s.rows   || []).filter(r => r['사용여부'] === 'Y');
+    CACHE.vendor   = (v.rows   || []).filter(r => r['사용여부'] === 'Y');
+    CACHE.project  = (p.rows   || []).filter(r => r['상태'] !== '완료');
+    CACHE.currency = (c.rows   || []).filter(r => r['사용여부'] === 'Y');
+    CACHE.unit     = (u.rows   || []).filter(r => r['사용여부'] === 'Y');
+    CACHE.category = (cat.rows || []).filter(r => r['사용여부'] === 'Y');
+    CACHE.division = (div.rows || []).filter(r => r['사용여부'] === 'Y');
     // Parts/Equipment 도 캐싱
     const [pa, eq] = await Promise.all([
       api({ action: 'getParts' }),
@@ -766,6 +781,7 @@ async function loadCache() {
     ]);
     CACHE.parts     = (pa.rows || []).filter(r => r['사용여부'] === 'Y');
     CACHE.equipment = (eq.rows || []).filter(r => r['사용여부'] === 'Y');
+    updateTypeDatelist();
   } catch(e) {}
 }
 
@@ -782,6 +798,18 @@ async function refreshCache(type) {
     if (type === 'project' || !type) {
       const r = await api({ action: 'getSettings', sheet: 'Settings_Project' });
       CACHE.project = (r.rows || []).filter(x => x['상태'] !== '완료');
+    }
+    if (type === 'unit' || !type) {
+      const r = await api({ action:'getSettings', sheet:'Settings_Unit' });
+      CACHE.unit = (r.rows||[]).filter(x => x['사용여부']==='Y');
+    }
+    if (type === 'category' || !type) {
+      const r = await api({ action:'getSettings', sheet:'Settings_Category' });
+      CACHE.category = (r.rows||[]).filter(x => x['사용여부']==='Y');
+    }
+    if (type === 'division' || !type) {
+      const r = await api({ action:'getSettings', sheet:'Settings_Division' });
+      CACHE.division = (r.rows||[]).filter(x => x['사용여부']==='Y');
     }
     if (type === 'parts' || !type) {
       const r = await api({ action: 'getParts' });
@@ -803,6 +831,9 @@ const PAGE_META = {
   'settings-vendor':   { title: '공급사/거래처 관리', sub: '설정' },
   'settings-project':  { title: '프로젝트 관리',  sub: '설정' },
   'settings-currency': { title: '통화 관리',      sub: '설정' },
+  'settings-unit':     { title: '단위 관리',      sub: '설정' },
+  'settings-category': { title: '카테고리 관리',  sub: '설정' },
+  'settings-division': { title: '구분 관리',      sub: '설정' },
   'master-parts':      { title: 'Parts',          sub: 'Master DB' },
   'master-equipment':  { title: 'Equipment',      sub: 'Master DB' },
   'reg-quotation':     { title: '견적 등록',      sub: '등록' },
@@ -837,6 +868,9 @@ function navigate(page) {
     case 'settings-vendor':   renderSettingsVendor(content);  break;
     case 'settings-project':  renderSettingsProject(content); break;
     case 'settings-currency': renderSettingsCurrency(content);break;
+    case 'settings-unit':     renderSettingsUnit(content);    break;
+    case 'settings-category': renderSettingsCategory(content);break;
+    case 'settings-division': renderSettingsDivision(content);break;
     case 'master-parts':      renderMasterParts(content);     break;
     case 'master-equipment':  renderMasterEquip(content);     break;
     case 'reg-quotation':     renderRegQuotation(content);    break;
@@ -937,6 +971,17 @@ function fmtAmt(n) {
 // ═══════════════════════════════════════════════════════
 // SETTINGS - 공통 CRUD 렌더러
 // ═══════════════════════════════════════════════════════
+
+// ── 공통: 설정항목 삭제 (행 완전 삭제) ───────────────────────
+async function deleteSetting(sheet, id, idField, label, reloadFn) {
+  if (!confirm(`"${label}"을(를) 완전히 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return;
+  try {
+    await api({ action: 'deleteSetting', sheet, id, idField });
+    showToast(`${label} 삭제됨`);
+    reloadFn();
+  } catch(e) { showToast('삭제 실패: ' + e.message, 'error'); }
+}
+
 function renderSettingsPage(el, config) {
   el.innerHTML = `
   <div class="card">
@@ -953,57 +998,48 @@ function renderSettingsPage(el, config) {
 
 // ─── 직원 관리 ───────────────────────────────────────────
 async function renderSettingsStaff(el) {
-  renderSettingsPage(el, {
-    title: '직원 관리', tableId: 'staff-table',
-    addFn: 'openStaffModal', loadFn: loadStaffTable
-  });
+  renderSettingsPage(el, { title:'직원 관리', tableId:'staff-table', addFn:'openStaffModal', loadFn:loadStaffTable });
 }
-
 async function loadStaffTable() {
   const el = document.getElementById('staff-table');
   if (!el) return;
   try {
-    const d = await api({ action: 'getSettings', sheet: 'Settings_Staff' });
+    const d = await api({ action:'getSettings', sheet:'Settings_Staff' });
     const rows = d.rows || [];
-    if (!rows.length) {
-      el.innerHTML = '<div class="table-empty">등록된 직원이 없습니다</div>'; return;
-    }
+    if (!rows.length) { el.innerHTML='<div class="table-empty">등록된 직원이 없습니다</div>'; return; }
     el.innerHTML = `
-    <div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th>ID</th><th>이름</th><th>부서</th><th>직급</th>
-          <th>연락처</th><th>이메일</th><th>상태</th><th>등록일</th><th></th>
-        </tr></thead>
-        <tbody>
-          ${rows.map(r => `
-          <tr>
-            <td class="td-mono">${r['ID']||''}</td>
-            <td><strong>${r['이름']||''}</strong></td>
-            <td class="td-muted">${r['부서']||''}</td>
-            <td class="td-muted">${r['직급']||''}</td>
-            <td class="td-muted">${r['연락처']||''}</td>
-            <td class="td-muted">${r['이메일']||''}</td>
-            <td>${badgeYN(r['사용여부'])}</td>
-            <td class="td-muted text-sm">${fmtDate(r['등록일'])}</td>
-            <td>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>ID</th><th>이름</th><th>부서</th><th>직급</th>
+        <th>연락처</th><th>이메일</th><th>상태</th><th>등록일</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r => `
+        <tr>
+          <td class="td-mono">${r['ID']||''}</td>
+          <td><strong>${r['이름']||''}</strong></td>
+          <td class="td-muted">${r['부서']||''}</td>
+          <td class="td-muted">${r['직급']||''}</td>
+          <td class="td-muted">${r['연락처']||''}</td>
+          <td class="td-muted">${r['이메일']||''}</td>
+          <td>${badgeYN(r['사용여부'])}</td>
+          <td class="td-muted text-sm">${fmtDate(r['등록일'])}</td>
+          <td>
+            <div class="flex gap-2">
               <button class="btn btn-secondary btn-sm" onclick='openStaffModal(${JSON.stringify(r)})'>수정</button>
-            </td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>`;
-  } catch(e) {
-    el.innerHTML = '<div class="table-empty">로드 실패</div>';
-  }
+              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Staff","${r['ID']}","ID","${r['이름']||r['ID']}",loadStaffTable)'>삭제</button>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>`;
+  } catch(e) { el.innerHTML='<div class="table-empty">로드 실패</div>'; }
 }
-
-function openStaffModal(data = null) {
-  const isEdit = !!data;
-  const d = data || {};
+function openStaffModal(data=null) {
+  const isEdit=!!data, d=data||{};
   showModal({
-    title: isEdit ? '직원 수정' : '직원 추가',
-    body: `
+    title: isEdit?'직원 수정':'직원 추가',
+    body:`
       <div class="form-grid form-grid-2">
         <div class="form-group">
           <label class="form-label">이름 <span class="req">*</span></label>
@@ -1033,48 +1069,28 @@ function openStaffModal(data = null) {
           </select>
         </div>
       </div>`,
-    onConfirm: async () => {
-      const row = {
-        'ID':     d['ID'] || ('ST-' + Date.now()),
-        '이름':   val('f-name'),
-        '부서':   val('f-dept'),
-        '직급':   val('f-rank'),
-        '연락처': val('f-tel'),
-        '이메일': val('f-email'),
-        '사용여부': val('f-use'),
-        '등록일': d['등록일'] || '',
-      };
-      if (!row['이름']) { showToast('이름을 입력하세요', 'error'); return false; }
-      if (isEdit) {
-        await api({ action: 'updateSetting', sheet: 'Settings_Staff', id: d['ID'], idField: 'ID', row });
-        showToast('직원 정보가 수정되었습니다');
-      } else {
-        await api({ action: 'addSetting', sheet: 'Settings_Staff', row });
-        showToast('직원이 추가되었습니다');
-      }
-      await refreshCache('staff');
-      loadStaffTable();
+    onConfirm: async()=>{
+      const row={'ID':d['ID']||('ST-'+Date.now()),'이름':val('f-name'),'부서':val('f-dept'),
+        '직급':val('f-rank'),'연락처':val('f-tel'),'이메일':val('f-email'),'사용여부':val('f-use'),'등록일':d['등록일']||''};
+      if(!row['이름']){showToast('이름을 입력하세요','error');return false;}
+      if(isEdit){await api({action:'updateSetting',sheet:'Settings_Staff',id:d['ID'],idField:'ID',row});showToast('수정되었습니다');}
+      else{await api({action:'addSetting',sheet:'Settings_Staff',row});showToast('추가되었습니다');}
+      await refreshCache('staff'); loadStaffTable();
     }
   });
 }
 
 // ─── 공급사 관리 ──────────────────────────────────────────
 async function renderSettingsVendor(el) {
-  renderSettingsPage(el, {
-    title: '공급사/거래처 관리', tableId: 'vendor-table',
-    addFn: 'openVendorModal', loadFn: loadVendorTable
-  });
+  renderSettingsPage(el, { title:'공급사/거래처 관리', tableId:'vendor-table', addFn:'openVendorModal', loadFn:loadVendorTable });
 }
-
 async function loadVendorTable() {
   const el = document.getElementById('vendor-table');
   if (!el) return;
   try {
-    const d = await api({ action: 'getSettings', sheet: 'Settings_Vendor' });
+    const d = await api({ action:'getSettings', sheet:'Settings_Vendor' });
     const rows = d.rows || [];
-    if (!rows.length) {
-      el.innerHTML = '<div class="table-empty">등록된 공급사가 없습니다</div>'; return;
-    }
+    if (!rows.length) { el.innerHTML='<div class="table-empty">등록된 공급사가 없습니다</div>'; return; }
     el.innerHTML = `
     <div class="table-wrap"><table>
       <thead><tr>
@@ -1091,19 +1107,22 @@ async function loadVendorTable() {
           <td class="td-muted">${r['연락처']||''}</td>
           <td class="td-muted">${r['이메일']||''}</td>
           <td>${badgeYN(r['사용여부'])}</td>
-          <td><button class="btn btn-secondary btn-sm" onclick='openVendorModal(${JSON.stringify(r)})'>수정</button></td>
+          <td>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick='openVendorModal(${JSON.stringify(r)})'>수정</button>
+              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Vendor","${r['ID']}","ID","${r['회사명']||r['ID']}",loadVendorTable)'>삭제</button>
+            </div>
+          </td>
         </tr>`).join('')}
       </tbody>
     </table></div>`;
-  } catch(e) { el.innerHTML = '<div class="table-empty">로드 실패</div>'; }
+  } catch(e) { el.innerHTML='<div class="table-empty">로드 실패</div>'; }
 }
-
-function openVendorModal(data = null) {
-  const isEdit = !!data;
-  const d = data || {};
+function openVendorModal(data=null) {
+  const isEdit=!!data, d=data||{};
   showModal({
-    title: isEdit ? '공급사 수정' : '공급사 추가',
-    body: `
+    title: isEdit?'공급사 수정':'공급사 추가',
+    body:`
       <div class="form-grid form-grid-2">
         <div class="form-group" style="grid-column:1/-1">
           <label class="form-label">회사명 <span class="req">*</span></label>
@@ -1146,46 +1165,29 @@ function openVendorModal(data = null) {
           </select>
         </div>
       </div>`,
-    onConfirm: async () => {
-      const row = {
-        'ID': d['ID'] || ('V-' + Date.now()),
-        '회사명': val('f-company'), '구분': val('f-type'),
-        '담당자': val('f-contact'), '연락처': val('f-tel'),
-        '이메일': val('f-email'),   '주소': val('f-addr'),
-        '비고': val('f-note'),      '사용여부': val('f-use'),
-        '등록일': d['등록일'] || '',
-      };
-      if (!row['회사명']) { showToast('회사명을 입력하세요', 'error'); return false; }
-      if (isEdit) {
-        await api({ action: 'updateSetting', sheet: 'Settings_Vendor', id: d['ID'], idField: 'ID', row });
-        showToast('공급사 정보가 수정되었습니다');
-      } else {
-        await api({ action: 'addSetting', sheet: 'Settings_Vendor', row });
-        showToast('공급사가 추가되었습니다');
-      }
-      await refreshCache('vendor');
-      loadVendorTable();
+    onConfirm: async()=>{
+      const row={'ID':d['ID']||('V-'+Date.now()),'회사명':val('f-company'),'구분':val('f-type'),
+        '담당자':val('f-contact'),'연락처':val('f-tel'),'이메일':val('f-email'),
+        '주소':val('f-addr'),'비고':val('f-note'),'사용여부':val('f-use'),'등록일':d['등록일']||''};
+      if(!row['회사명']){showToast('회사명을 입력하세요','error');return false;}
+      if(isEdit){await api({action:'updateSetting',sheet:'Settings_Vendor',id:d['ID'],idField:'ID',row});showToast('수정되었습니다');}
+      else{await api({action:'addSetting',sheet:'Settings_Vendor',row});showToast('추가되었습니다');}
+      await refreshCache('vendor'); loadVendorTable();
     }
   });
 }
 
 // ─── 프로젝트 관리 ────────────────────────────────────────
 async function renderSettingsProject(el) {
-  renderSettingsPage(el, {
-    title: '프로젝트 관리', tableId: 'project-table',
-    addFn: 'openProjectModal', loadFn: loadProjectTable
-  });
+  renderSettingsPage(el, { title:'프로젝트 관리', tableId:'project-table', addFn:'openProjectModal', loadFn:loadProjectTable });
 }
-
 async function loadProjectTable() {
   const el = document.getElementById('project-table');
   if (!el) return;
   try {
-    const d = await api({ action: 'getSettings', sheet: 'Settings_Project' });
+    const d = await api({ action:'getSettings', sheet:'Settings_Project' });
     const rows = d.rows || [];
-    if (!rows.length) {
-      el.innerHTML = '<div class="table-empty">등록된 프로젝트가 없습니다</div>'; return;
-    }
+    if (!rows.length) { el.innerHTML='<div class="table-empty">등록된 프로젝트가 없습니다</div>'; return; }
     el.innerHTML = `
     <div class="table-wrap"><table>
       <thead><tr>
@@ -1202,19 +1204,22 @@ async function loadProjectTable() {
           <td class="td-muted text-sm">${r['시작일']||''}</td>
           <td class="td-muted text-sm">${r['종료일']||''}</td>
           <td>${badgeProjectStatus(r['상태'])}</td>
-          <td><button class="btn btn-secondary btn-sm" onclick='openProjectModal(${JSON.stringify(r)})'>수정</button></td>
+          <td>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick='openProjectModal(${JSON.stringify(r)})'>수정</button>
+              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Project","${r['ID']}","ID","${r['프로젝트명']||r['ID']}",loadProjectTable)'>삭제</button>
+            </div>
+          </td>
         </tr>`).join('')}
       </tbody>
     </table></div>`;
-  } catch(e) { el.innerHTML = '<div class="table-empty">로드 실패</div>'; }
+  } catch(e) { el.innerHTML='<div class="table-empty">로드 실패</div>'; }
 }
-
-function openProjectModal(data = null) {
-  const isEdit = !!data;
-  const d = data || {};
+function openProjectModal(data=null) {
+  const isEdit=!!data, d=data||{};
   showModal({
-    title: isEdit ? '프로젝트 수정' : '프로젝트 추가',
-    body: `
+    title: isEdit?'프로젝트 수정':'프로젝트 추가',
+    body:`
       <div class="form-grid form-grid-2">
         <div class="form-group">
           <label class="form-label">프로젝트코드</label>
@@ -1249,41 +1254,27 @@ function openProjectModal(data = null) {
           <input class="form-input" id="f-note" value="${d['비고']||''}">
         </div>
       </div>`,
-    onConfirm: async () => {
-      const row = {
-        'ID': d['ID'] || ('P-' + Date.now()),
-        '프로젝트코드': val('f-code'), '프로젝트명': val('f-pname'),
-        '고객사': val('f-client'),     '시작일': val('f-start'),
-        '종료일': val('f-end'),        '상태': val('f-status'),
-        '비고': val('f-note'),         '등록일': d['등록일'] || '',
-      };
-      if (!row['프로젝트명']) { showToast('프로젝트명을 입력하세요', 'error'); return false; }
-      if (isEdit) {
-        await api({ action: 'updateSetting', sheet: 'Settings_Project', id: d['ID'], idField: 'ID', row });
-        showToast('프로젝트가 수정되었습니다');
-      } else {
-        await api({ action: 'addSetting', sheet: 'Settings_Project', row });
-        showToast('프로젝트가 추가되었습니다');
-      }
-      await refreshCache('project');
-      loadProjectTable();
+    onConfirm: async()=>{
+      const row={'ID':d['ID']||('P-'+Date.now()),'프로젝트코드':val('f-code'),'프로젝트명':val('f-pname'),
+        '고객사':val('f-client'),'시작일':val('f-start'),'종료일':val('f-end'),
+        '상태':val('f-status'),'비고':val('f-note'),'등록일':d['등록일']||''};
+      if(!row['프로젝트명']){showToast('프로젝트명을 입력하세요','error');return false;}
+      if(isEdit){await api({action:'updateSetting',sheet:'Settings_Project',id:d['ID'],idField:'ID',row});showToast('수정되었습니다');}
+      else{await api({action:'addSetting',sheet:'Settings_Project',row});showToast('추가되었습니다');}
+      await refreshCache('project'); loadProjectTable();
     }
   });
 }
 
 // ─── 통화 관리 ────────────────────────────────────────────
 async function renderSettingsCurrency(el) {
-  renderSettingsPage(el, {
-    title: '통화 관리', tableId: 'currency-table',
-    addFn: 'openCurrencyModal', loadFn: loadCurrencyTable
-  });
+  renderSettingsPage(el, { title:'통화 관리', tableId:'currency-table', addFn:'openCurrencyModal', loadFn:loadCurrencyTable });
 }
-
 async function loadCurrencyTable() {
   const el = document.getElementById('currency-table');
   if (!el) return;
   try {
-    const d = await api({ action: 'getSettings', sheet: 'Settings_Currency' });
+    const d = await api({ action:'getSettings', sheet:'Settings_Currency' });
     const rows = d.rows || [];
     el.innerHTML = `
     <div class="table-wrap"><table>
@@ -1295,19 +1286,22 @@ async function loadCurrencyTable() {
           <td class="td-mono" style="font-weight:600">${r['통화코드']||''}</td>
           <td>${r['통화명']||''}</td>
           <td>${badgeYN(r['사용여부'])}</td>
-          <td><button class="btn btn-secondary btn-sm" onclick='openCurrencyModal(${JSON.stringify(r)})'>수정</button></td>
+          <td>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick='openCurrencyModal(${JSON.stringify(r)})'>수정</button>
+              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Currency","${r['ID']}","ID","${r['통화코드']||r['ID']}",loadCurrencyTable)'>삭제</button>
+            </div>
+          </td>
         </tr>`).join('')}
       </tbody>
     </table></div>`;
-  } catch(e) { el.innerHTML = '<div class="table-empty">로드 실패</div>'; }
+  } catch(e) { el.innerHTML='<div class="table-empty">로드 실패</div>'; }
 }
-
-function openCurrencyModal(data = null) {
-  const isEdit = !!data;
-  const d = data || {};
+function openCurrencyModal(data=null) {
+  const isEdit=!!data, d=data||{};
   showModal({
-    title: isEdit ? '통화 수정' : '통화 추가',
-    body: `
+    title: isEdit?'통화 수정':'통화 추가',
+    body:`
       <div class="form-grid form-grid-2">
         <div class="form-group">
           <label class="form-label">통화코드 <span class="req">*</span></label>
@@ -1325,22 +1319,236 @@ function openCurrencyModal(data = null) {
           </select>
         </div>
       </div>`,
-    onConfirm: async () => {
-      const row = {
-        'ID': d['ID'] || ('C-' + Date.now()),
-        '통화코드': val('f-code').toUpperCase(),
-        '통화명': val('f-name'),
-        '사용여부': val('f-use'),
-      };
-      if (!row['통화코드']) { showToast('통화코드를 입력하세요', 'error'); return false; }
-      if (isEdit) {
-        await api({ action: 'updateSetting', sheet: 'Settings_Currency', id: d['ID'], idField: 'ID', row });
-        showToast('통화가 수정되었습니다');
-      } else {
-        await api({ action: 'addSetting', sheet: 'Settings_Currency', row });
-        showToast('통화가 추가되었습니다');
-      }
+    onConfirm: async()=>{
+      const row={'ID':d['ID']||('C-'+Date.now()),'통화코드':val('f-code').toUpperCase(),'통화명':val('f-name'),'사용여부':val('f-use')};
+      if(!row['통화코드']){showToast('통화코드를 입력하세요','error');return false;}
+      if(isEdit){await api({action:'updateSetting',sheet:'Settings_Currency',id:d['ID'],idField:'ID',row});showToast('수정되었습니다');}
+      else{await api({action:'addSetting',sheet:'Settings_Currency',row});showToast('추가되었습니다');}
       loadCurrencyTable();
+    }
+  });
+}
+
+// ─── 단위 관리 ────────────────────────────────────────────
+async function renderSettingsUnit(el) {
+  renderSettingsPage(el, { title:'단위 관리', tableId:'unit-table', addFn:'openUnitModal', loadFn:loadUnitTable });
+}
+async function loadUnitTable() {
+  const el = document.getElementById('unit-table');
+  if (!el) return;
+  try {
+    const d = await api({ action:'getSettings', sheet:'Settings_Unit' });
+    const rows = d.rows || [];
+    if (!rows.length) { el.innerHTML='<div class="table-empty">등록된 단위가 없습니다</div>'; return; }
+    el.innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th>단위코드</th><th>단위명</th><th>적용대상</th><th>사용여부</th><th></th></tr></thead>
+      <tbody>
+        ${rows.map(r => `
+        <tr>
+          <td class="td-mono">${r['ID']||''}</td>
+          <td class="td-mono" style="font-weight:600">${r['단위코드']||''}</td>
+          <td>${r['단위명']||''}</td>
+          <td>${r['적용대상'] ? `<span class="badge badge-blue">${r['적용대상']}</span>` : ''}</td>
+          <td>${badgeYN(r['사용여부'])}</td>
+          <td>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick='openUnitModal(${JSON.stringify(r)})'>수정</button>
+              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Unit","${r['ID']}","ID","${r['단위코드']||r['ID']}",loadUnitTable)'>삭제</button>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>`;
+  } catch(e) { el.innerHTML='<div class="table-empty">로드 실패</div>'; }
+}
+function openUnitModal(data=null) {
+  const isEdit=!!data, d=data||{};
+  showModal({
+    title: isEdit?'단위 수정':'단위 추가',
+    body:`
+      <div class="form-grid form-grid-2">
+        <div class="form-group">
+          <label class="form-label">단위코드 <span class="req">*</span></label>
+          <input class="form-input" id="f-ucode" value="${d['단위코드']||''}" placeholder="EA">
+        </div>
+        <div class="form-group">
+          <label class="form-label">단위명</label>
+          <input class="form-input" id="f-uname" value="${d['단위명']||''}" placeholder="개">
+        </div>
+        <div class="form-group">
+          <label class="form-label">적용대상</label>
+          <select class="form-select" id="f-utarget">
+            <option value="공통"        ${(d['적용대상']||'공통')==='공통'?'selected':''}>공통 (Parts+Equipment)</option>
+            <option value="Parts"       ${d['적용대상']==='Parts'?'selected':''}>Parts 전용</option>
+            <option value="Equipment"   ${d['적용대상']==='Equipment'?'selected':''}>Equipment 전용</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">사용여부</label>
+          <select class="form-select" id="f-uuse">
+            <option value="Y" ${d['사용여부']==='Y'||!isEdit?'selected':''}>사용</option>
+            <option value="N" ${d['사용여부']==='N'?'selected':''}>미사용</option>
+          </select>
+        </div>
+      </div>`,
+    onConfirm: async()=>{
+      const row={'ID':d['ID']||('U-'+Date.now()),'단위코드':val('f-ucode'),'단위명':val('f-uname'),
+        '적용대상':val('f-utarget'),'사용여부':val('f-uuse')};
+      if(!row['단위코드']){showToast('단위코드를 입력하세요','error');return false;}
+      if(isEdit){await api({action:'updateSetting',sheet:'Settings_Unit',id:d['ID'],idField:'ID',row});showToast('수정되었습니다');}
+      else{await api({action:'addSetting',sheet:'Settings_Unit',row});showToast('추가되었습니다');}
+      await refreshCache('unit'); loadUnitTable();
+    }
+  });
+}
+
+// ─── 카테고리 관리 ────────────────────────────────────────
+async function renderSettingsCategory(el) {
+  renderSettingsPage(el, { title:'카테고리 관리', tableId:'category-table', addFn:'openCategoryModal', loadFn:loadCategoryTable });
+}
+async function loadCategoryTable() {
+  const el = document.getElementById('category-table');
+  if (!el) return;
+  try {
+    const d = await api({ action:'getSettings', sheet:'Settings_Category' });
+    const rows = d.rows || [];
+    if (!rows.length) { el.innerHTML='<div class="table-empty">등록된 카테고리가 없습니다</div>'; return; }
+    el.innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th>카테고리명</th><th>적용대상</th><th>설명</th><th>사용여부</th><th></th></tr></thead>
+      <tbody>
+        ${rows.map(r => `
+        <tr>
+          <td class="td-mono">${r['ID']||''}</td>
+          <td><strong>${r['카테고리명']||''}</strong></td>
+          <td>${r['적용대상'] ? `<span class="badge badge-orange">${r['적용대상']}</span>` : ''}</td>
+          <td class="td-muted text-sm">${r['설명']||''}</td>
+          <td>${badgeYN(r['사용여부'])}</td>
+          <td>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick='openCategoryModal(${JSON.stringify(r)})'>수정</button>
+              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Category","${r['ID']}","ID","${r['카테고리명']||r['ID']}",loadCategoryTable)'>삭제</button>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>`;
+  } catch(e) { el.innerHTML='<div class="table-empty">로드 실패</div>'; }
+}
+function openCategoryModal(data=null) {
+  const isEdit=!!data, d=data||{};
+  showModal({
+    title: isEdit?'카테고리 수정':'카테고리 추가',
+    body:`
+      <div class="form-grid form-grid-2">
+        <div class="form-group">
+          <label class="form-label">카테고리명 <span class="req">*</span></label>
+          <input class="form-input" id="f-cname" value="${d['카테고리명']||''}" placeholder="전장품">
+        </div>
+        <div class="form-group">
+          <label class="form-label">적용대상</label>
+          <select class="form-select" id="f-ctarget">
+            <option value="공통"        ${(d['적용대상']||'공통')==='공통'?'selected':''}>공통 (Parts+Equipment)</option>
+            <option value="Parts"       ${d['적용대상']==='Parts'?'selected':''}>Parts 전용</option>
+            <option value="Equipment"   ${d['적용대상']==='Equipment'?'selected':''}>Equipment 전용</option>
+          </select>
+        </div>
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">설명</label>
+          <input class="form-input" id="f-cdesc" value="${d['설명']||''}" placeholder="예: 모터, 드라이브 등 전기 관련 부품">
+        </div>
+        <div class="form-group">
+          <label class="form-label">사용여부</label>
+          <select class="form-select" id="f-cuse">
+            <option value="Y" ${d['사용여부']==='Y'||!isEdit?'selected':''}>사용</option>
+            <option value="N" ${d['사용여부']==='N'?'selected':''}>미사용</option>
+          </select>
+        </div>
+      </div>`,
+    onConfirm: async()=>{
+      const row={'ID':d['ID']||('CAT-'+Date.now()),'카테고리명':val('f-cname'),
+        '적용대상':val('f-ctarget'),'설명':val('f-cdesc'),'사용여부':val('f-cuse')};
+      if(!row['카테고리명']){showToast('카테고리명을 입력하세요','error');return false;}
+      if(isEdit){await api({action:'updateSetting',sheet:'Settings_Category',id:d['ID'],idField:'ID',row});showToast('수정되었습니다');}
+      else{await api({action:'addSetting',sheet:'Settings_Category',row});showToast('추가되었습니다');}
+      await refreshCache('category'); loadCategoryTable();
+    }
+  });
+}
+
+// ─── 구분 관리 ────────────────────────────────────────────
+async function renderSettingsDivision(el) {
+  renderSettingsPage(el, { title:'구분 관리', tableId:'division-table', addFn:'openDivisionModal', loadFn:loadDivisionTable });
+}
+async function loadDivisionTable() {
+  const el = document.getElementById('division-table');
+  if (!el) return;
+  try {
+    const d = await api({ action:'getSettings', sheet:'Settings_Division' });
+    const rows = d.rows || [];
+    if (!rows.length) { el.innerHTML='<div class="table-empty">등록된 구분이 없습니다</div>'; return; }
+    el.innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th>구분명</th><th>적용위치</th><th>설명</th><th>사용여부</th><th></th></tr></thead>
+      <tbody>
+        ${rows.map(r => `
+        <tr>
+          <td class="td-mono">${r['ID']||''}</td>
+          <td><strong>${r['구분명']||''}</strong></td>
+          <td>${r['적용위치'] ? `<span class="badge badge-yellow">${r['적용위치']}</span>` : ''}</td>
+          <td class="td-muted text-sm">${r['설명']||''}</td>
+          <td>${badgeYN(r['사용여부'])}</td>
+          <td>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick='openDivisionModal(${JSON.stringify(r)})'>수정</button>
+              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Division","${r['ID']}","ID","${r['구분명']||r['ID']}",loadDivisionTable)'>삭제</button>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>`;
+  } catch(e) { el.innerHTML='<div class="table-empty">로드 실패</div>'; }
+}
+function openDivisionModal(data=null) {
+  const isEdit=!!data, d=data||{};
+  showModal({
+    title: isEdit?'구분 수정':'구분 추가',
+    body:`
+      <div class="form-grid form-grid-2">
+        <div class="form-group">
+          <label class="form-label">구분명 <span class="req">*</span></label>
+          <input class="form-input" id="f-dname" value="${d['구분명']||''}" placeholder="예: Shuttle, 외주, 인건비">
+        </div>
+        <div class="form-group">
+          <label class="form-label">적용위치</label>
+          <select class="form-select" id="f-dloc">
+            <option value="공통"        ${(d['적용위치']||'공통')==='공통'?'selected':''}>공통 (견적+구매+판매)</option>
+            <option value="견적"        ${d['적용위치']==='견적'?'selected':''}>견적 전용</option>
+            <option value="구매판매"    ${d['적용위치']==='구매판매'?'selected':''}>구매/판매 전용</option>
+            <option value="Parts"       ${d['적용위치']==='Parts'?'selected':''}>Parts 전용</option>
+            <option value="Equipment"   ${d['적용위치']==='Equipment'?'selected':''}>Equipment 전용</option>
+          </select>
+        </div>
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">설명</label>
+          <input class="form-input" id="f-ddesc" value="${d['설명']||''}" placeholder="설명 (선택)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">사용여부</label>
+          <select class="form-select" id="f-duse">
+            <option value="Y" ${d['사용여부']==='Y'||!isEdit?'selected':''}>사용</option>
+            <option value="N" ${d['사용여부']==='N'?'selected':''}>미사용</option>
+          </select>
+        </div>
+      </div>`,
+    onConfirm: async()=>{
+      const row={'ID':d['ID']||('DIV-'+Date.now()),'구분명':val('f-dname'),
+        '적용위치':val('f-dloc'),'설명':val('f-ddesc'),'사용여부':val('f-duse')};
+      if(!row['구분명']){showToast('구분명을 입력하세요','error');return false;}
+      if(isEdit){await api({action:'updateSetting',sheet:'Settings_Division',id:d['ID'],idField:'ID',row});showToast('수정되었습니다');}
+      else{await api({action:'addSetting',sheet:'Settings_Division',row});showToast('추가되었습니다');}
+      await refreshCache('division'); loadDivisionTable();
     }
   });
 }
@@ -1419,7 +1627,10 @@ function renderPartsRows(rows) {
         <td>${r['카테고리'] ? `<span class="badge badge-blue">${r['카테고리']}</span>` : ''}</td>
         <td>${badgeYN(r['사용여부'])}</td>
         <td>
-          <button class="btn btn-secondary btn-sm" onclick='openPartsModal(${JSON.stringify(r)})'>수정</button>
+          <div class="flex gap-2">
+            <button class="btn btn-secondary btn-sm" onclick='openPartsModal(${JSON.stringify(r)})'>수정</button>
+            <button class="btn btn-danger btn-sm" onclick='deleteSetting("Parts","${r[\'PartNo\']}","PartNo","${r[\'품명\']||r[\'PartNo\']}",loadPartsTable)'>삭제</button>
+          </div>
         </td>
       </tr>`).join('')}
     </tbody>
@@ -1468,11 +1679,15 @@ function openPartsModal(data = null) {
         </div>
         <div class="form-group">
           <label class="form-label">단위</label>
-          <input class="form-input" id="f-unit" value="${d['단위']||''}" placeholder="EA, SET, M, KG">
+          <select class="form-select" id="f-unit">
+            ${buildUnitOpts('Parts', d['단위']||'')}
+          </select>
         </div>
         <div class="form-group">
           <label class="form-label">카테고리</label>
-          <input class="form-input" id="f-cat" value="${d['카테고리']||''}" placeholder="전장, 기계, 소모품 등">
+          <select class="form-select" id="f-cat">
+            ${buildCatOpts('Parts', d['카테고리']||'')}
+          </select>
         </div>
         <div class="form-group">
           <label class="form-label">표준단가</label>
@@ -1596,7 +1811,10 @@ function renderEquipRows(rows) {
         <td class="td-muted">${r['통화']||''}</td>
         <td>${badgeYN(r['사용여부'])}</td>
         <td>
-          <button class="btn btn-secondary btn-sm" onclick='openEquipModal(${JSON.stringify(r)})'>수정</button>
+          <div class="flex gap-2">
+            <button class="btn btn-secondary btn-sm" onclick='openEquipModal(${JSON.stringify(r)})'>수정</button>
+            <button class="btn btn-danger btn-sm" onclick='deleteSetting("Equipment","${r['EquipNo']}","EquipNo","${r['장비명']||r['EquipNo']}",loadEquipTable)'>삭제</button>
+          </div>
         </td>
       </tr>`).join('')}
     </tbody>
@@ -1648,11 +1866,15 @@ function openEquipModal(data = null) {
         </div>
         <div class="form-group">
           <label class="form-label">단위</label>
-          <input class="form-input" id="f-unit" value="${d['단위']||''}" placeholder="EA, SET">
+          <select class="form-select" id="f-unit">
+            ${buildUnitOpts('Equipment', d['단위']||'')}
+          </select>
         </div>
         <div class="form-group">
           <label class="form-label">카테고리</label>
-          <input class="form-input" id="f-cat" value="${d['카테고리']||''}">
+          <select class="form-select" id="f-cat">
+            ${buildCatOpts('Equipment', d['카테고리']||'')}
+          </select>
         </div>
         <div class="form-group">
           <label class="form-label">표준단가</label>
@@ -3604,6 +3826,49 @@ function resetColWidths(tableId) {
   table._resizeInited = false;
   initResizableTable(table);
   showToast('컬럼 너비가 초기화되었습니다');
+}
+
+
+// ── 설정 캐시 기반 드롭다운 빌더 ─────────────────────────────
+function buildUnitOpts(target, selected='') {
+  const items = (CACHE.unit||[]).filter(u=>u['적용대상']==='공통'||u['적용대상']===target);
+  let opts = '<option value="">-- 선택 --</option>';
+  items.forEach(u => {
+    const lbl = u['단위코드'] + (u['단위명'] ? ` (${u['단위명']})` : '');
+    opts += `<option value="${u['단위코드']}" ${selected===u['단위코드']?'selected':''}>${lbl}</option>`;
+  });
+  // 기존값이 목록에 없으면 추가
+  if (selected && !items.find(u=>u['단위코드']===selected))
+    opts += `<option value="${selected}" selected>${selected}</option>`;
+  return opts;
+}
+function buildCatOpts(target, selected='') {
+  const items = (CACHE.category||[]).filter(c=>c['적용대상']==='공통'||c['적용대상']===target);
+  let opts = '<option value="">-- 선택 --</option>';
+  items.forEach(c => {
+    opts += `<option value="${c['카테고리명']}" ${selected===c['카테고리명']?'selected':''}>${c['카테고리명']}</option>`;
+  });
+  if (selected && !items.find(c=>c['카테고리명']===selected))
+    opts += `<option value="${selected}" selected>${selected}</option>`;
+  return opts;
+}
+
+function updateTypeDatelist() {
+  const dl = document.getElementById('type-list');
+  if (!dl) return;
+  const divItems = (CACHE.division||[]).filter(d=>d['사용여부']==='Y');
+  if (!divItems.length) return;  // 없으면 기본값 유지
+  dl.innerHTML = divItems.map(d=>`<option value="${d['구분명']}">`).join('');
+}
+function buildDivOpts(target, selected='') {
+  const items = (CACHE.division||[]).filter(d=>d['적용위치']==='공통'||d['적용위치']===target);
+  let opts = '';
+  items.forEach(d => {
+    opts += `<option value="${d['구분명']}" ${selected===d['구분명']?'selected':''}>${d['구분명']}</option>`;
+  });
+  if (selected && !items.find(d=>d['구분명']===selected))
+    opts += `<option value="${selected}" selected>${selected}</option>`;
+  return opts;
 }
 
 // ═══════════════════════════════════════════════════════
