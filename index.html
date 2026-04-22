@@ -2188,16 +2188,6 @@ function renderRegQuotation(el, prefill = null) {
     <!-- ═══ 오른쪽(전체폭): 세부내역 + 연결 ═══ -->
     <div class="quot-right" style="width:100%">
 
-      <!-- 연결 도구 -->
-      <div class="card" style="margin-bottom:14px">
-        <div class="card-header" style="margin-bottom:10px">
-          <div class="card-title">🔗 견적서 ↔ 세부내역 연결</div>
-          <span style="font-size:11px;color:var(--text3)">세부내역 행의 견적가(Y)를 견적서 행의 금액(G)에 연결</span>
-        </div>
-        <div id="link-rules-area"></div>
-        <button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="addLinkRule()">+ 연결 규칙 추가</button>
-      </div>
-
       <!-- 세부내역 -->
       <div class="card">
         <div class="card-header" style="margin-bottom:10px">
@@ -2213,6 +2203,7 @@ function renderRegQuotation(el, prefill = null) {
           <table class="dt-table" id="detail-table" data-resize-id="detail-table">
             <thead><tr>
               <th style="width:30px">No.</th>
+              <th style="width:90px">견적서No.</th>
               <th style="width:90px">구분</th>
               <th style="width:120px">품번</th>
               <th style="width:160px">품명</th>
@@ -2247,12 +2238,11 @@ function renderRegQuotation(el, prefill = null) {
   // 상태 초기화
   _qClientIdx  = 0;
   _qDetailIdx  = 0;
-  _qLinkRules  = [];   // [{clientRowId, detailRowIds:[]}]
+  _qSheetRows  = [];
+  _qLinkRules  = [];
 
   // 초기 행 생성
   addDetailRow();
-  // 연결 패널 초기 렌더
-  renderLinkRules();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2939,21 +2929,23 @@ function qsCalcTotal() {
 
 /* ── 연결 규칙에서 견적서 금액 자동 반영 ── */
 function applyAllLinkRules() {
-  _qLinkRules.forEach(rule => {
-    if (!rule.clientRowId || !rule.detailRowIds.length) return;
-    let sum = 0;
-    rule.detailRowIds.forEach(dId => {
-      const didx    = dId.replace('dr-', '');
-      const finalEl = document.getElementById('dr-final-' + didx);
-      sum += parseFloat((finalEl?.textContent||'').replace(/,/g,'')) || 0;
-    });
-    // 해당 sheetRow amt 업데이트
-    const row = _qSheetRows.find(r => r.id === rule.clientRowId);
-    if (row) {
-      row.amt = sum;
-      qsUpdateRowDisplay(row.id);
-    }
+  // 1) 모든 sheetRow amt 초기화
+  _qSheetRows.forEach(r => { r.amt = 0; });
+
+  // 2) 세부내역 각 행의 linkto → 해당 sheetRow에 견적가 합산
+  document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)').forEach(tr => {
+    const idx     = tr.id.replace('dr-', '');
+    const linkto  = document.getElementById(`dr-linkto-${idx}`)?.value || '';
+    if (!linkto) return;
+    const finalEl = document.getElementById(`dr-final-${idx}`);
+    const amt     = parseFloat((finalEl?.textContent||'').replace(/,/g,'')) || 0;
+    const row     = _qSheetRows.find(r => r.id === linkto);
+    if (row) row.amt = (row.amt || 0) + amt;
   });
+
+  // 3) 각 row 화면 업데이트
+  _qSheetRows.forEach(r => qsUpdateRowDisplay(r.id));
+
   qsCalcGroupTotals();
   qsCalcTotal();
   updateQuotSheetBadge();
@@ -2967,8 +2959,7 @@ function syncQsFromLinks() {
 
 /* ── 연결 패널: 견적서 행 드롭다운 (팝업 행 기준) ── */
 function reindexClientRows() {
-  // 연결 패널 갱신
-  renderLinkRules();
+  refreshQsNoDropdowns();   // 세부내역 드롭다운 갱신
   updateQuotSheetBadge();
 }
 
@@ -2991,40 +2982,71 @@ function getClientRowSeq(rowId) {
 let _qDetailIdx = 0;
 const DETAIL_LS_KEY = 'sgintech_col_detail-table';
 
+// 견적서No. 드롭다운 옵션 빌드
+function buildQsNoOpts(selected='') {
+  let opts = '<option value="">—</option>';
+  _qSheetRows.forEach(r => {
+    const label = r.no ? `${r.no} ${r.name||''}`.trim() : (r.name||'');
+    opts += `<option value="${r.id}" ${selected===r.id?'selected':''}>${label}</option>`;
+  });
+  return opts;
+}
+
+// 모든 행의 견적서No. 드롭다운 갱신
+function refreshQsNoDropdowns() {
+  document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)').forEach(tr => {
+    const idx = tr.id.replace('dr-', '');
+    const sel = document.getElementById(`dr-linkto-${idx}`);
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = buildQsNoOpts(cur);
+  });
+}
+
 function addDetailRow(data = {}) {
   const tbody = document.getElementById('detail-rows');
   if (!tbody) return;
   const idx = _qDetailIdx++;
   const id  = `dr-${idx}`;
-  const currOpts = (CACHE.currency||['KRW','USD','EUR','JPY','CNY']).length
-    ? (CACHE.currency||[]).map(c => `<option value="${c['통화코드']||c}" ${(data.통화||'CNY')===(c['통화코드']||c)?'selected':''}>${c['통화코드']||c}</option>`).join('')
-    : ['KRW','USD','EUR','JPY','CNY'].map(c => `<option value="${c}" ${(data.통화||'CNY')===c?'selected':''}>${c}</option>`).join('');
+  const currOpts = (CACHE.currency||[]).length
+    ? (CACHE.currency||[]).map(c => `<option value="${c['통화코드']||c}" ${(data['통화']||data.통화||'CNY')===(c['통화코드']||c)?'selected':''}>${c['통화코드']||c}</option>`).join('')
+    : ['KRW','USD','EUR','JPY','CNY'].map(c => `<option value="${c}" ${(data['통화']||data.통화||'CNY')===c?'selected':''}>${c}</option>`).join('');
+
+  const linkto   = data['견적서No'] || data.linkto || '';
+  const qsNoOpts = buildQsNoOpts(linkto);
 
   const tr = document.createElement('tr');
   tr.id = id;
   tr.dataset.rowid = id;
   tr.innerHTML = `
     <td class="line-no" style="text-align:center;font-size:10px;color:var(--text3);user-select:none"></td>
-    <td><input class="dt-input" id="dr-type-${idx}" value="${data.구분||''}" placeholder="구분" list="type-list"></td>
-    <td><input class="dt-input" id="dr-partno-${idx}" value="${data.품번||''}" placeholder="품번"
+    <td>
+      <select class="dt-input" id="dr-linkto-${idx}" style="width:84px;font-size:10px"
+              onchange="applyDetailLink(${idx})"
+              title="이 행의 견적가를 합산할 고객용 견적서 항목">
+        ${qsNoOpts}
+      </select>
+    </td>
+    <td><input class="dt-input" id="dr-type-${idx}" value="${data['구분']||data.구분||''}" placeholder="구분" list="type-list"></td>
+    <td><input class="dt-input" id="dr-partno-${idx}" value="${data['ItemNo']||data.품번||''}" placeholder="품번"
                oninput="matchDetailByPartno(${idx},this.value)"></td>
-    <td><input class="dt-input" id="dr-name-${idx}" value="${data.품명||''}" placeholder="품명"
+    <td><input class="dt-input" id="dr-name-${idx}" value="${data['품명']||data.품명||''}" placeholder="품명"
                oninput="matchItemByName('detail',${idx},this.value)"></td>
-    <td><input class="dt-input" id="dr-unit-${idx}" value="${data.단위||''}" placeholder="EA" style="width:40px"></td>
+    <td><input class="dt-input" id="dr-unit-${idx}" value="${data['단위']||data.단위||''}" placeholder="EA" style="width:40px"></td>
     <td><select class="dt-input" id="dr-curr-${idx}" onchange="calcDetailRow(${idx})" style="width:48px">${currOpts}</select></td>
-    <td><input class="dt-input dt-num" type="number" id="dr-fprice-${idx}" value="${data.외화단가||''}" placeholder="0" oninput="calcDetailRow(${idx})"></td>
-    <td><input class="dt-input dt-num" type="number" id="dr-qty-${idx}" value="${data.수량||''}" placeholder="0" oninput="calcDetailRow(${idx})"></td>
+    <td><input class="dt-input dt-num" type="number" id="dr-fprice-${idx}" value="${data['외화단가']||data.외화단가||''}" placeholder="0" oninput="calcDetailRow(${idx})"></td>
+    <td><input class="dt-input dt-num" type="number" id="dr-qty-${idx}" value="${data['수량']||data.수량||''}" placeholder="0" oninput="calcDetailRow(${idx})"></td>
     <td class="dt-calc" id="dr-fcost-${idx}">—</td>
-    <td><input class="dt-input dt-num" type="number" id="dr-disc-${idx}" value="${data.할인율||0}" placeholder="0" oninput="calcDetailRow(${idx})" min="0" max="100"></td>
+    <td><input class="dt-input dt-num" type="number" id="dr-disc-${idx}" value="${data['할인율']||data.할인율||0}" placeholder="0" oninput="calcDetailRow(${idx})" min="0" max="100"></td>
     <td class="dt-calc" id="dr-fdisc-${idx}">—</td>
-    <td><input class="dt-input dt-num" type="number" id="dr-rate-${idx}" value="${data.환율||''}" placeholder="환율" oninput="calcDetailRow(${idx})"></td>
+    <td><input class="dt-input dt-num" type="number" id="dr-rate-${idx}" value="${data['환율']||data.환율||''}" placeholder="환율" oninput="calcDetailRow(${idx})"></td>
     <td class="dt-calc" id="dr-kwprice-${idx}">—</td>
     <td class="dt-calc" id="dr-kwcost-${idx}">—</td>
     <td class="dt-calc" id="dr-kwdisc-${idx}">—</td>
-    <td><input class="dt-input dt-num" type="number" id="dr-margin-${idx}" value="${data.익율||''}" placeholder="1.2" step="0.01" oninput="calcDetailRow(${idx})"></td>
+    <td><input class="dt-input dt-num" type="number" id="dr-margin-${idx}" value="${data['익율']||data.익율||''}" placeholder="1.2" step="0.01" oninput="calcDetailRow(${idx})"></td>
     <td class="dt-final" id="dr-final-${idx}">—</td>
     <td class="dt-calc" id="dr-discfinal-${idx}">—</td>
-    <td><input class="dt-input" id="dr-note-${idx}" value="${data.비고||''}" placeholder="비고"></td>
+    <td><input class="dt-input" id="dr-note-${idx}" value="${data['비고']||data.비고||''}" placeholder="비고"></td>
     <td>
       <div style="display:flex;flex-direction:column;gap:1px;align-items:center">
         <button class="line-del-btn" style="font-size:10px;padding:1px 3px" onclick="moveDetailRow('up','${id}')">▲</button>
@@ -3034,8 +3056,13 @@ function addDetailRow(data = {}) {
     </td>`;
   tbody.appendChild(tr);
   reindexDetailRows();
-  if (data.외화단가 || data.수량) calcDetailRow(idx);
+  if (data['외화단가']||data.외화단가||data['수량']||data.수량) calcDetailRow(idx);
   return id;
+}
+
+// 견적서No. 선택 → applyAllLinkRules 트리거
+function applyDetailLink(idx) {
+  applyAllLinkRules();
 }
 
 function addDetailSubtotal() {
@@ -3072,7 +3099,6 @@ function reindexDetailRows() {
     const lno = tr.querySelector('.line-no');
     if (lno) lno.textContent = ++n;
   });
-  renderLinkRules();
 }
 
 function moveDetailRow(dir, rowId) {
@@ -3189,97 +3215,10 @@ function matchDetailByPartno(idx, val) {
 // ─── 연결 도구 ────────────────────────────────────────────────
 let _qLinkRules = [];  // [{clientRowId:'cr-0', detailRowIds:['dr-1','dr-2']}]
 
-function addLinkRule() {
-  _qLinkRules.push({ clientRowId: '', detailRowIds: [] });
-  renderLinkRules();
-}
 
-function removeLinkRule(i) {
-  _qLinkRules.splice(i, 1);
-  renderLinkRules();
-  applyAllLinkRules();
-}
 
-function renderLinkRules() {
-  const area = document.getElementById('link-rules-area');
-  if (!area) return;
-
-  // 고객용 행 목록 (_qSheetRows 기준)
-  const clientRows = _qSheetRows.map((row, i) => ({
-    id:    row.id,
-    label: `[${i+1}] ${row.type === 'group' ? '▶ ' : ''}${row.name || (row.type==='group'?'그룹':'항목')+(i+1)}`
-  }));
-
-  // 세부내역 행 목록
-  const detailRows = Array.from(document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)')).map((tr, i) => {
-    const idx = tr.id.replace('dr-', '');
-    const nm  = document.getElementById(`dr-name-${idx}`)?.value || `행 ${i+1}`;
-    const cls = document.getElementById(`dr-type-${idx}`)?.value || '';
-    return { id: tr.id, label: `[${i+1}] ${cls ? cls+' / ' : ''}${nm}` };
-  });
-
-  if (_qLinkRules.length === 0) {
-    area.innerHTML = `<div style="font-size:12px;color:var(--text3);padding:6px 0">
-      연결 규칙이 없습니다. 아래 버튼으로 추가하세요.<br>
-      <span style="font-size:11px;color:var(--text3)">먼저 고객용 견적서에서 행을 추가한 뒤 연결하세요.</span>
-    </div>`;
-    return;
-  }
-
-  area.innerHTML = _qLinkRules.map((rule, i) => {
-    const cOpts = clientRows.map(r =>
-      `<option value="${r.id}" ${rule.clientRowId===r.id?'selected':''}>${r.label}</option>`).join('');
-    const dOpts = detailRows.map(r =>
-      `<option value="${r.id}" ${rule.detailRowIds.includes(r.id)?'selected':''}>${r.label}</option>`).join('');
-
-    const cLabel = clientRows.find(r=>r.id===rule.clientRowId)?.label || '?';
-    const dLabels = rule.detailRowIds.map(d=>detailRows.find(r=>r.id===d)?.label||'?').join(', ');
-    const preview = rule.clientRowId && rule.detailRowIds.length
-      ? `견적서 "${cLabel}" ← Σ 세부내역 [${dLabels}]`
-      : '';
-
-    return `
-    <div class="link-panel" style="margin-bottom:8px">
-      <div class="flex items-center gap-2" style="margin-bottom:8px">
-        <span class="link-panel-title" style="margin:0">규칙 ${i+1}</span>
-        <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:11px"
-                onclick="removeLinkRule(${i})">✕ 삭제</button>
-      </div>
-      <div class="link-row">
-        <span style="font-size:11px;color:var(--text2);white-space:nowrap;">견적서 행</span>
-        <select class="form-select" style="font-size:12px;padding:4px 8px;min-width:180px;max-width:240px"
-                onchange="_qLinkRules[${i}].clientRowId=this.value;renderLinkRules();applyAllLinkRules()">
-          <option value="">-- 선택 --</option>${cOpts}
-        </select>
-        <span class="link-arrow" style="flex-shrink:0">←</span>
-        <span style="font-size:11px;color:var(--text2);white-space:nowrap;">세부내역</span>
-        <select class="form-select" style="font-size:12px;padding:4px 8px;flex:1;min-width:200px"
-                multiple size="3"
-                onchange="_qLinkRules[${i}].detailRowIds=Array.from(this.selectedOptions).map(o=>o.value);renderLinkRules();applyAllLinkRules()">
-          ${dOpts}
-        </select>
-      </div>
-      ${preview ? `<div class="link-eq-preview" style="margin-top:6px">${preview}</div>` : ''}
-    </div>`;
-  }).join('');
-}
 
 // 연결 규칙 적용 → 고객용 견적서 금액 갱신
-function applyAllLinkRules() {
-  // 모든 고객 행 금액 초기화 (규칙 없는 행)
-  const linkedClients = new Set(_qLinkRules.map(r => r.clientRowId).filter(Boolean));
-
-  _qLinkRules.forEach(rule => {
-    if (!rule.clientRowId || !rule.detailRowIds.length) return;
-    let sum = 0;
-    rule.detailRowIds.forEach(dId => {
-      const didx   = dId.replace('dr-', '');
-      const finalEl = document.getElementById(`dr-final-${didx}`);
-      sum += parseFloat((finalEl?.textContent||'').replace(/,/g,'')) || 0;
-    });
-    setClientRowAmt(rule.clientRowId, sum);
-  });
-}
 
 function resetDetailColWidths() {
   resetColWidths('detail-table');
@@ -3335,9 +3274,13 @@ async function submitQuotation(editQuotNo = null) {
       detailLines.push({ '_type': 'subtotal', '순번': i + 1 });
       return;
     }
+    const linktoId    = document.getElementById(`dr-linkto-${idx}`)?.value || '';
+    const linktoRow   = _qSheetRows.find(r => r.id === linktoId);
+    const linktoNo    = linktoRow?.no || '';
     detailLines.push({
       '_type':     'detail',
       '순번':      i + 1,
+      '견적서No':  linktoNo,
       '구분':      document.getElementById(`dr-type-${idx}`)?.value   || '',
       'ItemNo':    document.getElementById(`dr-partno-${idx}`)?.value || '',
       '품명':      document.getElementById(`dr-name-${idx}`)?.value   || '',
@@ -3353,14 +3296,7 @@ async function submitQuotation(editQuotNo = null) {
     });
   });
 
-  // 연결 규칙: clientRowId/detailRowIds를 순번으로 변환하여 저장
-  const linkRulesSaved = _qLinkRules.map(r => ({
-    clientSeq:  getClientRowSeq(r.clientRowId),
-    detailSeqs: r.detailRowIds.map(d => getDetailRowSeq(d)).filter(Boolean),
-  })).filter(r => r.clientSeq && r.detailSeqs.length);
-
-  // GAS 저장: lines = clientLines + detailLines, 연결규칙은 header.linkRules에
-  header['linkRules'] = JSON.stringify(linkRulesSaved);
+  // GAS 저장: lines = clientLines + detailLines
   const lines = [...clientLines, ...detailLines];
 
   if (!lines.length) { showToast('내용을 입력하세요','error'); return; }
@@ -3743,11 +3679,13 @@ async function openQuotDetail(quotNo) {
     const d = await api({ action: 'getQuotDetail', quotNo });
     if (!d.ok) { showToast('상세 로드 실패','error'); return; }
     const h = d.header;
-    const lines = d.lines || [];
-    const total = lines.reduce((s, l) => {
-      const qty = Number(l['수량']||0), price = Number(l['견적단가']||0);
-      const disc = Number(l['할인율']||0), margin = Number(l['익율']||0);
-      return s + qty * price * (1 - disc/100) * (1 + margin/100);
+    const allLines     = d.lines || [];
+    const clientLines  = allLines.filter(l => l['_type'] === 'client');
+    const detailLines  = allLines.filter(l => l['_type'] === 'detail' || (!l['_type'] && l['품명']));
+    // 견적가 합계: 세부내역 기준
+    const total = detailLines.reduce((s, l) => {
+      const v = parseFloat(String(l['견적가']||'0').replace(/,/g,'')) || 0;
+      return s + v;
     }, 0);
 
     showModal({
@@ -3763,39 +3701,34 @@ async function openQuotDetail(quotNo) {
           ${infoRow('상태', badgeStatus(h['상태']))}
           ${h['비고'] ? infoRow('비고', h['비고'], true) : ''}
         </div>
-        <div class="line-table-wrap">
-          <table class="line-table">
+        <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px">📊 내부 세부내역</div>
+        <div class="line-table-wrap" style="overflow-x:auto;margin-bottom:20px">
+          <table class="line-table" style="min-width:800px">
             <thead><tr>
-              <th>No.</th><th>구분</th><th>품번</th><th>품명</th><th>모델명</th>
-              <th>수량</th><th>단위</th><th style="text-align:right">견적단가</th>
-              <th>통화</th><th style="text-align:right">할인율</th>
-              <th style="text-align:right">할인단가</th><th style="text-align:right">익율</th>
-              <th style="text-align:right">견적가</th><th>비고</th>
+              <th>No.</th><th>견적서No.</th><th>구분</th><th>품번</th><th>품명</th>
+              <th>단위</th><th>통화</th><th style="text-align:right">외화단가</th>
+              <th style="text-align:right">수량</th><th style="text-align:right">할인율</th>
+              <th style="text-align:right">환율</th><th style="text-align:right">익율</th>
+              <th style="text-align:right;color:var(--accent)">견적가(₩)</th><th>비고</th>
             </tr></thead>
             <tbody>
-              ${lines.map((l,i) => {
-                const qty   = Number(l['수량']||0);
-                const price = Number(l['견적단가']||0);
-                const disc  = Number(l['할인율']||0);
-                const margin= Number(l['익율']||0);
-                const base  = qty * price;
-                const discP = base * (1 - disc/100);
-                const final = discP * (1 + margin/100);
+              ${detailLines.map((l,i) => {
+                const fv = parseFloat(String(l['견적가']||'0').replace(/,/g,'')) || 0;
                 return `
               <tr>
                 <td style="text-align:center;color:var(--text3)">${i+1}</td>
+                <td class="td-mono" style="font-size:11px;color:var(--accent)">${l['견적서No']||'—'}</td>
                 <td>${l['구분']?`<span class="badge badge-gray">${l['구분']}</span>`:''}</td>
                 <td class="td-mono" style="font-size:11px">${l['ItemNo']||''}</td>
                 <td><strong>${l['품명']||''}</strong></td>
-                <td class="td-muted">${l['모델명']||''}</td>
-                <td style="text-align:right">${l['수량']||0}</td>
                 <td class="td-muted">${l['단위']||''}</td>
-                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">${Number(l['견적단가']||0).toLocaleString()}</td>
                 <td class="td-muted">${l['통화']||''}</td>
-                <td style="text-align:right;color:var(--yellow-light)">${disc ? disc+'%' : '—'}</td>
-                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text2)">${base>0?discP.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</td>
-                <td style="text-align:right;color:var(--orange-light)">${margin ? margin+'%' : '—'}</td>
-                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:var(--accent)">${base>0?final.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</td>
+                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">${Number(l['외화단가']||0).toLocaleString()}</td>
+                <td style="text-align:right">${l['수량']||0}</td>
+                <td style="text-align:right;color:var(--yellow-light)">${l['할인율']?l['할인율']+'%':'—'}</td>
+                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:11px">${l['환율']||'—'}</td>
+                <td style="text-align:right;color:var(--orange-light)">${l['익율']||'—'}</td>
+                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:var(--accent)">${fv>0?fv.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</td>
                 <td class="td-muted" style="font-size:11px">${l['비고']||''}</td>
               </tr>`;}).join('')}
               <tr style="background:var(--bg3)">
@@ -3825,8 +3758,7 @@ async function openQuotDetail(quotNo) {
 function editQuotation(h, lines) {
   navigate('reg-quotation');
   setTimeout(() => {
-    // 헤더 값 채우기
-    setVal('q-no',     h['QuotNo']||'');
+    // ── 헤더 값 채우기
     setVal('q-date',   fmtDate(h['견적일']));
     setVal('q-expire', fmtDate(h['유효기간']));
     setVal('q-note',   h['비고']||'');
@@ -3835,19 +3767,69 @@ function editQuotation(h, lines) {
     setSelectByVal('q-staff',   h['담당자ID']);
     setSelectByVal('q-status',  h['상태']);
 
-    // 라인 초기화 후 채우기
-    document.getElementById('quot-lines').innerHTML = '';
-    _quotLineIdx = 0;
-    lines.forEach(l => addQuotLine(l));
+    // ── sheetMeta 복원
+    try {
+      const meta = JSON.parse(h['sheetMeta']||'{}');
+      const plantEl    = document.getElementById('qs-plant');
+      const projnameEl = document.getElementById('qs-projname');
+      if (plantEl    && meta.plant)    plantEl.value    = meta.plant;
+      if (projnameEl && meta.projname) projnameEl.value = meta.projname;
+    } catch(e) {}
 
-    // 저장 버튼을 수정 모드로
-    const saveBtn = document.querySelector('.btn-success');
+    // ── 고객용 견적서 행 복원 (_qSheetRows)
+    const clientLinesSaved = lines.filter(l => l['_type'] === 'client');
+    _qSheetRows = clientLinesSaved.map((l, i) => ({
+      id:   'rc-' + i,
+      type: l['_rowtype'] || 'item',
+      no:   l['No']  || l['순번'] || '',
+      name: l['품명'] || '',
+      spec: l['형번'] || '',
+      unit: l['단위'] || '',
+      qty:  Number(l['수량']) || 0,
+      amt:  Number(l['금액']) || 0,
+      note: l['비고'] || '',
+    }));
+    _qClientIdx = _qSheetRows.length;
+    updateQuotSheetBadge();
+
+    // ── 세부내역 행 복원
+    document.getElementById('detail-rows').innerHTML = '';
+    _qDetailIdx = 0;
+    const detailLinesSaved = lines.filter(l => l['_type'] === 'detail' || !l['_type']);
+
+    // 견적서No.(문자열) → sheetRow id 매핑 테이블
+    const noToId = {};
+    _qSheetRows.forEach(r => { if (r.no) noToId[String(r.no)] = r.id; });
+
+    detailLinesSaved.forEach(l => {
+      const savedNo = l['견적서No'] || '';
+      const linktoId = noToId[savedNo] || '';
+      addDetailRow({
+        '견적서No': linktoId,   // id로 변환해서 전달
+        '구분':     l['구분']   || '',
+        'ItemNo':   l['ItemNo'] || '',
+        '품명':     l['품명']   || '',
+        '단위':     l['단위']   || '',
+        '통화':     l['통화']   || 'CNY',
+        '외화단가': l['외화단가']|| '',
+        '수량':     l['수량']   || '',
+        '할인율':   l['할인율'] || 0,
+        '환율':     l['환율']   || '',
+        '익율':     l['익율']   || '',
+        '비고':     l['비고']   || '',
+      });
+    });
+
+    // ── 저장 버튼 수정 모드
+    const saveBtn = document.getElementById('quot-save-btn');
     if (saveBtn) {
       saveBtn.textContent = '💾 수정 저장';
       saveBtn.onclick = () => submitQuotation(h['QuotNo']);
     }
+
+    applyAllLinkRules();
     showToast('수정 모드: 내용을 변경 후 저장하세요', 'info');
-  }, 100);
+  }, 200);
 }
 
 async function deleteQuot(quotNo) {
