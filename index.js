@@ -218,6 +218,12 @@ function navigate(page) {
     }
   });
 
+  // 견적 수정 모드 해제 (견적 등록 외 페이지 이동 시)
+  if (page !== 'reg-quotation' && window._editingQuotNo) {
+    window._editingQuotNo = null;
+    const sb = document.getElementById('quot-save-btn');
+    if (sb) { sb.textContent = '💾 저장'; delete sb.dataset.editno; }
+  }
   // 상단 타이틀
   const meta = PAGE_META[page] || { title: page, sub: '' };
   document.getElementById('topbar-title').textContent = meta.title;
@@ -2491,6 +2497,10 @@ function resetDetailColWidths() {
 
 // ─── 견적 저장 ────────────────────────────────────────────────
 async function submitQuotation(editQuotNo = null) {
+  // 수정 모드: 전달인자 없을 때 전역변수 확인
+  if (!editQuotNo && window._editingQuotNo) {
+    editQuotNo = window._editingQuotNo;
+  }
   const date   = val('q-date');
   const vendor = document.getElementById('q-vendor');
   if (!date)         { showToast('견적일을 입력하세요','error'); return; }
@@ -2578,6 +2588,10 @@ async function submitQuotation(editQuotNo = null) {
       showToast(`견적이 저장되었습니다 (${res.quotNo})`);
     }
     _qClientIdx = 0; _qDetailIdx = 0; _qLinkRules = [];
+    window._editingQuotNo = null;  // 수정 모드 해제
+    // 저장 버튼도 신규 모드로 복원
+    const sb = document.getElementById('quot-save-btn');
+    if (sb) { sb.textContent = '💾 저장'; delete sb.dataset.editno; }
     navigate('list-quotation');
   } catch(e) {
     showToast('저장 실패: ' + e.message, 'error');
@@ -3009,7 +3023,7 @@ async function openQuotDetail(quotNo) {
       onConfirm: async () => {
         // 수정 버튼 역할: 등록 화면으로 이동하며 데이터 채우기
         closeModal();
-        editQuotation(h, lines);
+        editQuotation(h, allLines);
       }
     });
     // 모달 confirm 버튼을 "수정"으로 변경
@@ -3060,7 +3074,12 @@ function editQuotation(h, lines) {
     // ── 세부내역 행 복원
     document.getElementById('detail-rows').innerHTML = '';
     _qDetailIdx = 0;
-    const detailLinesSaved = lines.filter(l => l['_type'] === 'detail' || !l['_type']);
+    // _type이 'detail'이거나, _type이 없지만 품명/외화단가/수량 중 하나라도 있는 행
+    const detailLinesSaved = lines.filter(l =>
+      l['_type'] === 'detail' ||
+      (l['_type'] !== 'client' && l['_type'] !== 'subtotal' &&
+       (l['품명'] || l['외화단가'] || l['수량']))
+    );
 
     // 견적서No.(문자열) → sheetRow id 매핑 테이블
     const noToId = {};
@@ -3086,10 +3105,12 @@ function editQuotation(h, lines) {
     });
 
     // ── 저장 버튼 수정 모드
+    // HTML onclick 속성과 충돌하지 않도록 전역변수로 수정 대상 번호 보관
+    window._editingQuotNo = h['QuotNo'];
     const saveBtn = document.getElementById('quot-save-btn');
     if (saveBtn) {
       saveBtn.textContent = '💾 수정 저장';
-      saveBtn.onclick = () => submitQuotation(h['QuotNo']);
+      saveBtn.dataset.editno = h['QuotNo'];  // data 속성으로도 보관
     }
 
     applyAllLinkRules();
