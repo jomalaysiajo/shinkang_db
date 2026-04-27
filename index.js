@@ -1796,6 +1796,13 @@ function saveData() {
   } catch(e) {}
 }
 
+// 부모창에 현재 rows 실시간 전송 (드롭다운 즉시 갱신)
+function notifyParent() {
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage({ type: 'QS_ROWS_UPDATED', rows: rows }, '*');
+  }
+}
+
 // ── 새로고침 (세부내역 변경사항 반영) ───────────────────
 function refreshData() {
   loadData(true);  // merge 모드
@@ -1855,7 +1862,7 @@ function buildRowHtml(row, i) {
   if (row.type === 'group') {
     return \`
       <td><input class="ct-input" value="\${esc(row.no)}" placeholder="No."
-                 oninput="rows[\${i}].no=this.value" style="width:60px;text-align:center;
+                 oninput="rows[\${i}].no=this.value; notifyParent()" style="width:60px;text-align:center;
                  font-family:'JetBrains Mono',monospace;color:var(--accent);font-weight:700"></td>
       <td colspan="5"><input class="ct-input" value="\${esc(row.name)}" placeholder="그룹명"
                  oninput="rows[\${i}].name=this.value" style="font-size:13px;font-weight:600"></td>
@@ -1866,7 +1873,7 @@ function buildRowHtml(row, i) {
   } else {
     return \`
       <td class="center"><input class="ct-input" value="\${esc(row.no)}" placeholder="No."
-                 oninput="rows[\${i}].no=this.value" style="width:60px;text-align:center"></td>
+                 oninput="rows[\${i}].no=this.value; notifyParent()" style="width:60px;text-align:center"></td>
       <td><input class="ct-input" value="\${esc(row.name)}" placeholder="품명"
                  oninput="rows[\${i}].name=this.value"></td>
       <td><input class="ct-input" value="\${esc(row.spec)}" placeholder="형번/사양"
@@ -1901,6 +1908,7 @@ function addGroup() {
   const no = lastGroup ? String(Number(lastGroup.no) + 1) : '1';
   rows.push({ id, type:'group', no, name:'', spec:'', unit:'', qty:0, amt:0, note:'' });
   renderRows();
+  notifyParent();
 }
 
 function addItem() {
@@ -1912,6 +1920,7 @@ function addItem() {
   const autoNo = lastGroup ? (lastGroup.no + '-' + (itemsInGroup + 1)) : String(itemsInGroup + 1);
   rows.push({ id, type:'item', no:autoNo, name:'', spec:'', unit:'EA', qty:1, amt:0, note:'' });
   renderRows();
+  notifyParent();
 }
 
 function moveRow(dir, rowId) {
@@ -1927,6 +1936,7 @@ function removeRow(rowId) {
   renderRows();
   calcGroupTotals();
   calcTotal();
+  notifyParent();
 }
 
 // ── 계산 ──────────────────────────────────────────────────
@@ -3527,6 +3537,15 @@ function badgeProjectStatus(v) {
 
 // 새창(견적서)에서 저장 메시지 수신
 window.addEventListener('message', e => {
+  // 새창에서 실시간 편집 중 부모창 동기화
+  if (e.data?.type === 'QS_ROWS_UPDATED') {
+    try {
+      if (e.data.rows) {
+        _qSheetRows = e.data.rows;
+        refreshQsNoDropdowns();
+      }
+    } catch(err) {}
+  }
   if (e.data?.type === 'QS_SAVED') {
     try {
       const saved = JSON.parse(localStorage.getItem(e.data.key) || '{}');
@@ -3538,7 +3557,8 @@ window.addEventListener('message', e => {
         if (plantEl    && saved.plant)    plantEl.value    = saved.plant;
         if (projnameEl && saved.projname) projnameEl.value = saved.projname;
         updateQuotSheetBadge();
-        showToast('고객용 견적서 저장 완료', 'success');
+        refreshQsNoDropdowns();  // 세부내역 견적서No. 드롭다운 즉시 갱신
+        showToast('고객용 견적서 저장 완료 — 견적서No. 목록이 갱신되었습니다', 'success');
       }
     } catch(err) {}
   }
