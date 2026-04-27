@@ -1543,6 +1543,8 @@ let _qsWindow = null;
 function openQuotSheet() {
   // 현재 데이터를 localStorage에 직렬화해서 저장
   pushQsDataToStorage();
+  // 창 열기 전 드롭다운 먼저 갱신 (이미 저장된 데이터 반영)
+  refreshQsNoDropdowns();
 
   // 이미 창이 열려있으면 포커스 + 데이터 동기화
   if (_qsWindow && !_qsWindow.closed) {
@@ -1862,7 +1864,7 @@ function buildRowHtml(row, i) {
   if (row.type === 'group') {
     return \`
       <td><input class="ct-input" value="\${esc(row.no)}" placeholder="No."
-                 oninput="rows[\${i}].no=this.value; notifyParent()" style="width:60px;text-align:center;
+                 oninput="rows[\${i}].no=this.value; saveData(); notifyParent()" style="width:60px;text-align:center;
                  font-family:'JetBrains Mono',monospace;color:var(--accent);font-weight:700"></td>
       <td colspan="5"><input class="ct-input" value="\${esc(row.name)}" placeholder="그룹명"
                  oninput="rows[\${i}].name=this.value" style="font-size:13px;font-weight:600"></td>
@@ -1908,7 +1910,7 @@ function addGroup() {
   const no = lastGroup ? String(Number(lastGroup.no) + 1) : '1';
   rows.push({ id, type:'group', no, name:'', spec:'', unit:'', qty:0, amt:0, note:'' });
   renderRows();
-  notifyParent();
+  saveData(); notifyParent();
 }
 
 function addItem() {
@@ -1920,7 +1922,7 @@ function addItem() {
   const autoNo = lastGroup ? (lastGroup.no + '-' + (itemsInGroup + 1)) : String(itemsInGroup + 1);
   rows.push({ id, type:'item', no:autoNo, name:'', spec:'', unit:'EA', qty:1, amt:0, note:'' });
   renderRows();
-  notifyParent();
+  saveData(); notifyParent();
 }
 
 function moveRow(dir, rowId) {
@@ -1936,7 +1938,7 @@ function removeRow(rowId) {
   renderRows();
   calcGroupTotals();
   calcTotal();
-  notifyParent();
+  saveData(); notifyParent();
 }
 
 // ── 계산 ──────────────────────────────────────────────────
@@ -2278,18 +2280,40 @@ const DETAIL_LS_KEY = 'sgintech_col_detail-table';
 
 // 견적서No. 드롭다운 옵션 빌드
 // '-' 포함된 번호(세부항목)만 표시 (예: 1-1, 1-2, 2-1)
+// 고객용 견적서 데이터 읽기
+// 우선순위: 1) localStorage(SAVE_KEY) 저장본 2) _qSheetRows 3) QS_WINDOW_KEY
+function getQsRows() {
+  // 새창에서 저장한 최신 데이터 우선
+  try {
+    const saved = JSON.parse(localStorage.getItem('sgintech_quot_sheet_saved') || 'null');
+    if (saved && saved.rows && saved.rows.length) return saved.rows;
+  } catch(e) {}
+  // 부모창 메모리
+  if (_qSheetRows && _qSheetRows.length) return _qSheetRows;
+  // 새창에 전달용 스토리지
+  try {
+    const d = JSON.parse(localStorage.getItem('sgintech_quot_sheet_data') || 'null');
+    if (d && d.rows && d.rows.length) return d.rows;
+  } catch(e) {}
+  return [];
+}
+
+// '-' 포함된 세부항목(item)만 드롭다운에 표시
 function buildQsNoOpts(selected='') {
+  const rows = getQsRows();
   let opts = '<option value="">—</option>';
-  _qSheetRows
+  rows
     .filter(r => r.type === 'item' && r.no && String(r.no).includes('-'))
     .forEach(r => {
       const label = `${r.no}${r.name ? ' ' + r.name : ''}`;
-      opts += `<option value="${r.id}" ${selected===r.id?'selected':''}>${label}</option>`;
+      // selected는 id 또는 no 둘 다 매칭
+      const isSel = selected === r.id || selected === r.no;
+      opts += `<option value="${r.id}" ${isSel ? 'selected' : ''}>${label}</option>`;
     });
   return opts;
 }
 
-// 모든 행의 견적서No. 드롭다운 갱신
+// 모든 세부내역 행의 견적서No. 드롭다운 갱신
 function refreshQsNoDropdowns() {
   document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)').forEach(tr => {
     const idx = tr.id.replace('dr-', '');
@@ -2373,6 +2397,9 @@ function addDetailRow(data = {}) {
   if (data['외화단가']||data.외화단가||data['수량']||data.수량) calcDetailRow(idx);
   return id;
 }
+
+// 새창이 열려있거나 localStorage에 데이터 있으면 드롭다운 즉시 갱신
+// (addDetailRow 직후 호출 불필요 - refreshQsNoDropdowns가 전체 갱신)
 
 // 견적서No. 선택 → applyAllLinkRules 트리거
 function applyDetailLink(idx) {
@@ -3542,7 +3569,12 @@ window.addEventListener('message', e => {
     try {
       if (e.data.rows) {
         _qSheetRows = e.data.rows;
+        // localStorage도 즉시 갱신 (getQsRows가 읽을 수 있도록)
+        const cur = JSON.parse(localStorage.getItem('sgintech_quot_sheet_saved') || '{}');
+        localStorage.setItem('sgintech_quot_sheet_saved',
+          JSON.stringify({ ...cur, rows: e.data.rows }));
         refreshQsNoDropdowns();
+        updateQuotSheetBadge();
       }
     } catch(err) {}
   }
