@@ -2267,12 +2267,15 @@ let _qDetailIdx = 0;
 const DETAIL_LS_KEY = 'sgintech_col_detail-table';
 
 // 견적서No. 드롭다운 옵션 빌드
+// '-' 포함된 번호(세부항목)만 표시 (예: 1-1, 1-2, 2-1)
 function buildQsNoOpts(selected='') {
   let opts = '<option value="">—</option>';
-  _qSheetRows.forEach(r => {
-    const label = r.no ? `${r.no} ${r.name||''}`.trim() : (r.name||'');
-    opts += `<option value="${r.id}" ${selected===r.id?'selected':''}>${label}</option>`;
-  });
+  _qSheetRows
+    .filter(r => r.type === 'item' && r.no && String(r.no).includes('-'))
+    .forEach(r => {
+      const label = `${r.no}${r.name ? ' ' + r.name : ''}`;
+      opts += `<option value="${r.id}" ${selected===r.id?'selected':''}>${label}</option>`;
+    });
   return opts;
 }
 
@@ -2285,6 +2288,22 @@ function refreshQsNoDropdowns() {
     const cur = sel.value;
     sel.innerHTML = buildQsNoOpts(cur);
   });
+}
+
+// 비고 Tab → 새 행 추가 후 품번에 포커스
+function handleNoteTab(e, idx) {
+  if (e.key !== 'Tab' || e.shiftKey) return;
+  // 마지막 일반 행인지 확인
+  const allRows = Array.from(document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)'));
+  const lastIdx = allRows.length ? allRows[allRows.length-1].id.replace('dr-','') : null;
+  if (String(idx) !== String(lastIdx)) return; // 마지막 행이 아니면 기본 Tab 동작
+  e.preventDefault();
+  const newId = addDetailRow();
+  // 새 행의 품번 input에 포커스
+  setTimeout(() => {
+    const newIdx = document.getElementById(newId)?.id.replace('dr-','');
+    document.getElementById(`dr-partno-${newIdx}`)?.focus();
+  }, 30);
 }
 
 function addDetailRow(data = {}) {
@@ -2330,7 +2349,8 @@ function addDetailRow(data = {}) {
     <td><input class="dt-input dt-num" type="number" id="dr-margin-${idx}" value="${data['익율']||data.익율||''}" placeholder="1.2" step="0.01" oninput="calcDetailRow(${idx})"></td>
     <td class="dt-final" id="dr-final-${idx}">—</td>
     <td class="dt-calc" id="dr-discfinal-${idx}">—</td>
-    <td><input class="dt-input" id="dr-note-${idx}" value="${data['비고']||data.비고||''}" placeholder="비고"></td>
+    <td><input class="dt-input" id="dr-note-${idx}" value="${data['비고']||data.비고||''}" placeholder="비고"
+               onkeydown="handleNoteTab(event,${idx})"></td>
     <td>
       <div style="display:flex;flex-direction:column;gap:1px;align-items:center">
         <button class="line-del-btn" style="font-size:10px;padding:1px 3px" onclick="moveDetailRow('up','${id}')">▲</button>
@@ -2991,9 +3011,13 @@ async function openQuotDetail(quotNo) {
     const d = await api({ action: 'getQuotDetail', quotNo });
     if (!d.ok) { showToast('상세 로드 실패','error'); return; }
     const h = d.header;
-    const allLines     = d.lines || [];
-    const clientLines  = allLines.filter(l => l['_type'] === 'client');
-    const detailLines  = allLines.filter(l => l['_type'] === 'detail' || (!l['_type'] && l['품명']));
+    const allLines    = d.lines || [];
+    const clientLines = allLines.filter(l => l['_type'] === 'client');
+    // detail + subtotal 모두 포함, 순번 순서 정렬
+    const detailLines = allLines
+      .filter(l => l['_type'] === 'detail' || l['_type'] === 'subtotal' ||
+        (l['_type'] !== 'client' && (l['품명'] || l['외화단가'] || l['수량'])))
+      .sort((a, b) => Number(a['순번']||0) - Number(b['순번']||0));
     // 견적가 합계: 세부내역 기준
     const total = detailLines.reduce((s, l) => {
       const v = parseFloat(String(l['견적가']||'0').replace(/,/g,'')) || 0;
@@ -3024,25 +3048,41 @@ async function openQuotDetail(quotNo) {
               <th style="text-align:right;color:var(--accent)">견적가(₩)</th><th>비고</th>
             </tr></thead>
             <tbody>
-              ${detailLines.map((l,i) => {
-                const fv = parseFloat(String(l['견적가']||'0').replace(/,/g,'')) || 0;
-                return `
-              <tr>
-                <td style="text-align:center;color:var(--text3)">${i+1}</td>
-                <td class="td-mono" style="font-size:11px;color:var(--accent)">${l['견적서No']||'—'}</td>
-                <td>${l['구분']?`<span class="badge badge-gray">${l['구분']}</span>`:''}</td>
-                <td class="td-mono" style="font-size:11px">${l['ItemNo']||''}</td>
-                <td><strong>${l['품명']||''}</strong></td>
-                <td class="td-muted">${l['단위']||''}</td>
-                <td class="td-muted">${l['통화']||''}</td>
-                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">${Number(l['외화단가']||0).toLocaleString()}</td>
-                <td style="text-align:right">${l['수량']||0}</td>
-                <td style="text-align:right;color:var(--yellow-light)">${l['할인율']?l['할인율']+'%':'—'}</td>
-                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:11px">${l['환율']||'—'}</td>
-                <td style="text-align:right;color:var(--orange-light)">${l['익율']||'—'}</td>
-                <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:var(--accent)">${fv>0?fv.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</td>
-                <td class="td-muted" style="font-size:11px">${l['비고']||''}</td>
-              </tr>`;}).join('')}
+              ${(() => {
+                let detailNo = 0;
+                let subAccum = 0;
+                const rows = detailLines.map(l => {
+                  if (l['_type'] === 'subtotal') {
+                    const subAmt = subAccum;
+                    subAccum = 0;
+                    return `<tr style="background:var(--bg3);font-weight:600">
+                      <td colspan="12" style="text-align:right;padding:8px 14px;font-size:12px;color:var(--text2)">小　計</td>
+                      <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--accent)">${subAmt>0?subAmt.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</td>
+                      <td></td>
+                    </tr>`;
+                  }
+                  detailNo++;
+                  const fv = parseFloat(String(l['견적가']||'0').replace(/,/g,'')) || 0;
+                  subAccum += fv;
+                  return `<tr>
+                    <td style="text-align:center;color:var(--text3)">${detailNo}</td>
+                    <td class="td-mono" style="font-size:11px;color:var(--accent)">${l['견적서No']||'—'}</td>
+                    <td>${l['구분']?`<span class="badge badge-gray">${l['구분']}</span>`:''}</td>
+                    <td class="td-mono" style="font-size:11px">${l['ItemNo']||''}</td>
+                    <td><strong>${l['품명']||''}</strong></td>
+                    <td class="td-muted">${l['단위']||''}</td>
+                    <td class="td-muted">${l['통화']||''}</td>
+                    <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">${Number(l['외화단가']||0).toLocaleString()}</td>
+                    <td style="text-align:right">${l['수량']||0}</td>
+                    <td style="text-align:right;color:var(--yellow-light)">${l['할인율']?l['할인율']+'%':'—'}</td>
+                    <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:11px">${l['환율']||'—'}</td>
+                    <td style="text-align:right;color:var(--orange-light)">${l['익율']||'—'}</td>
+                    <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:var(--accent)">${fv>0?fv.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</td>
+                    <td class="td-muted" style="font-size:11px">${l['비고']||''}</td>
+                  </tr>`;
+                });
+                return rows.join('');
+              })()}
               <tr style="background:var(--bg3)">
                 <td colspan="12" style="text-align:right;font-weight:600;padding:10px 14px">견적가 합계</td>
                 <td style="text-align:right;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--accent)">
@@ -3104,36 +3144,40 @@ function editQuotation(h, lines) {
     _qClientIdx = _qSheetRows.length;
     updateQuotSheetBadge();
 
-    // ── 세부내역 행 복원
+    // ── 세부내역 행 복원 (detail + subtotal 모두 순번 순서대로)
     document.getElementById('detail-rows').innerHTML = '';
     _qDetailIdx = 0;
-    // _type이 'detail'이거나, _type이 없지만 품명/외화단가/수량 중 하나라도 있는 행
-    const detailLinesSaved = lines.filter(l =>
-      l['_type'] === 'detail' ||
-      (l['_type'] !== 'client' && l['_type'] !== 'subtotal' &&
-       (l['품명'] || l['외화단가'] || l['수량']))
-    );
+
+    // subtotal 포함, 순번 순서로 정렬
+    const allDetailLines = lines
+      .filter(l => l['_type'] === 'detail' || l['_type'] === 'subtotal' ||
+        (l['_type'] !== 'client' && (l['품명'] || l['외화단가'] || l['수량'])))
+      .sort((a, b) => Number(a['순번']||0) - Number(b['순번']||0));
 
     // 견적서No.(문자열) → sheetRow id 매핑 테이블
     const noToId = {};
     _qSheetRows.forEach(r => { if (r.no) noToId[String(r.no)] = r.id; });
 
-    detailLinesSaved.forEach(l => {
-      const savedNo = l['견적서No'] || '';
+    allDetailLines.forEach(l => {
+      if (l['_type'] === 'subtotal') {
+        addDetailSubtotal();  // 소계 행 복원
+        return;
+      }
+      const savedNo  = l['견적서No'] || '';
       const linktoId = noToId[savedNo] || '';
       addDetailRow({
-        '견적서No': linktoId,   // id로 변환해서 전달
-        '구분':     l['구분']   || '',
-        'ItemNo':   l['ItemNo'] || '',
-        '품명':     l['품명']   || '',
-        '단위':     l['단위']   || '',
-        '통화':     l['통화']   || 'CNY',
+        '견적서No': linktoId,
+        '구분':     l['구분']    || '',
+        'ItemNo':   l['ItemNo']  || '',
+        '품명':     l['품명']    || '',
+        '단위':     l['단위']    || '',
+        '통화':     l['통화']    || 'CNY',
         '외화단가': l['외화단가']|| '',
-        '수량':     l['수량']   || '',
-        '할인율':   l['할인율'] || 0,
-        '환율':     l['환율']   || '',
-        '익율':     l['익율']   || '',
-        '비고':     l['비고']   || '',
+        '수량':     l['수량']    || '',
+        '할인율':   l['할인율']  || 0,
+        '환율':     l['환율']    || '',
+        '익율':     l['익율']    || '',
+        '비고':     l['비고']    || '',
       });
     });
 
