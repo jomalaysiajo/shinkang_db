@@ -9,6 +9,18 @@ const LS_KEY  = 'sgintech_db_key';
 let API_KEY = '';
 let CACHE   = {}; // 설정 캐시
 
+// ── 성능 최적화: debounce + 행 데이터 캐시 ───────────────────
+// debounce: 연속 입력 시 마지막 호출만 실행
+function debounce(fn, delay = 80) {
+  let timer;
+  return function(...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), delay);
+  };
+}
+// 행별 계산 결과 캐시 (idx → {fcost, fdisc, kwcost, kwdisc, final, dfinal})
+const _rowCache = {};
+
 // ═══════════════════════════════════════════════════════
 // API
 // ═══════════════════════════════════════════════════════
@@ -2204,13 +2216,14 @@ function applyAllLinkRules() {
   _qSheetRows.forEach(r => { r.amt = 0; });
 
   // 2) 세부내역 각 행의 linkto → 해당 sheetRow에 견적가 합산
+  // _rowCache 우선 사용으로 DOM 조회 제거
   document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)').forEach(tr => {
-    const idx     = tr.id.replace('dr-', '');
-    const linkto  = document.getElementById(`dr-linkto-${idx}`)?.value || '';
+    const idx    = tr.id.replace('dr-', '');
+    const linkto = document.getElementById(`dr-linkto-${idx}`)?.value || '';
     if (!linkto) return;
-    const finalEl = document.getElementById(`dr-final-${idx}`);
-    const amt     = parseFloat((finalEl?.textContent||'').replace(/,/g,'')) || 0;
-    const row     = _qSheetRows.find(r => r.id === linkto);
+    const amt = (_rowCache[idx]?.final
+      ?? parseFloat((document.getElementById(`dr-final-${idx}`)?.textContent||'').replace(/,/g,'') || '0'));
+    const row = _qSheetRows.find(r => r.id === linkto);
     if (row) row.amt = (row.amt || 0) + amt;
   });
 
@@ -2344,7 +2357,7 @@ function addDetailSubtotal() {
   const tr  = document.createElement('tr');
   tr.id = id; tr.className = 'dt-subtotal';
   tr.innerHTML = `
-    <td colspan="8" style="text-align:right;padding:4px 8px;font-size:11px;color:var(--text3)">小計</td>
+    <td colspan="8" style="text-align:right;padding:4px 8px;font-size:11px;color:var(--text3);font-weight:600">小計</td>
     <td class="dt-calc" id="dr-fcost-${idx}" style="font-weight:600">—</td>
     <td></td>
     <td class="dt-calc" id="dr-fdisc-${idx}" style="font-weight:600">—</td>
@@ -2355,9 +2368,16 @@ function addDetailSubtotal() {
     <td></td>
     <td class="dt-final" id="dr-final-${idx}" style="font-weight:700">—</td>
     <td class="dt-calc" id="dr-discfinal-${idx}" style="font-weight:600">—</td>
-    <td colspan="2" style="text-align:center">
-      <button class="line-del-btn" onclick="removeDetailRow('${id}')">✕</button>
-    </td>`;
+    <td style="text-align:center;padding:2px 4px">
+      <div style="display:flex;flex-direction:column;gap:1px;align-items:center">
+        <button class="line-del-btn" style="font-size:10px;padding:1px 3px"
+                onclick="moveDetailRow('up','${id}')">▲</button>
+        <button class="line-del-btn" style="font-size:10px;padding:1px 3px"
+                onclick="moveDetailRow('dn','${id}')">▼</button>
+        <button class="line-del-btn" onclick="removeDetailRow('${id}')">✕</button>
+      </div>
+    </td>
+    <td></td>`;
   tbody.appendChild(tr);
   reindexDetailRows();
   calcDetailSubtotals();
@@ -2384,38 +2404,43 @@ function moveDetailRow(dir, rowId) {
 
 function removeDetailRow(rowId) {
   const el = document.getElementById(rowId);
-  if (el) el.remove();
-  // 연결 규칙에서 이 행 제거
+  if (el) {
+    const idx = rowId.replace('dr-', '');
+    delete _rowCache[idx];  // 캐시에서 제거
+    el.remove();
+  }
   _qLinkRules.forEach(r => { r.detailRowIds = r.detailRowIds.filter(d => d !== rowId); });
   reindexDetailRows();
   calcDetailSubtotals();
   applyAllLinkRules();
 }
 
-// 세부내역 행 계산
+// 세부내역 행 계산 (즉시 실행)
 function calcDetailRow(idx) {
-  const fprice  = parseFloat(document.getElementById(`dr-fprice-${idx}`)?.value  || 0);
-  const qty     = parseFloat(document.getElementById(`dr-qty-${idx}`)?.value     || 0);
-  const disc    = parseFloat(document.getElementById(`dr-disc-${idx}`)?.value    || 0);
-  const rate    = parseFloat(document.getElementById(`dr-rate-${idx}`)?.value    || 1);
-  const margin  = parseFloat(document.getElementById(`dr-margin-${idx}`)?.value  || 1);
-  const curr    = document.getElementById(`dr-curr-${idx}`)?.value || 'CNY';
+  // 입력값 읽기
+  const fprice = parseFloat(document.getElementById(`dr-fprice-${idx}`)?.value || 0);
+  const qty    = parseFloat(document.getElementById(`dr-qty-${idx}`)?.value    || 0);
+  const disc   = parseFloat(document.getElementById(`dr-disc-${idx}`)?.value   || 0);
+  const rate   = parseFloat(document.getElementById(`dr-rate-${idx}`)?.value   || 1);
+  const margin = parseFloat(document.getElementById(`dr-margin-${idx}`)?.value || 1);
+  const curr   = document.getElementById(`dr-curr-${idx}`)?.value || 'CNY';
 
-  // 외화 계산
-  const fcost  = fprice * qty;
-  const fdisc  = fcost  * (1 - disc / 100);
-
-  // 원화 계산 (KRW면 rate=1)
+  // 계산
+  const fcost         = fprice * qty;
+  const fdisc         = fcost  * (1 - disc / 100);
   const effectiveRate = curr === 'KRW' ? 1 : (rate || 1);
-  const kwprice = fprice * effectiveRate;
-  const kwcost  = fcost  * effectiveRate;
-  const kwdisc  = fdisc  * effectiveRate;
-  const final   = Math.ceil(kwcost  * margin / 1000) * 1000;
-  const dfinal  = Math.ceil(kwdisc  * margin / 1000) * 1000;
+  const kwprice       = fprice * effectiveRate;
+  const kwcost        = fcost  * effectiveRate;
+  const kwdisc        = fdisc  * effectiveRate;
+  const final         = Math.ceil(kwcost * margin / 1000) * 1000;
+  const dfinal        = Math.ceil(kwdisc * margin / 1000) * 1000;
 
-  const fmt = (v, d=0) => v > 0 ? v.toLocaleString(undefined,{maximumFractionDigits:d}) : '—';
-  const setTd = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
+  // 결과를 행 캐시에 저장
+  _rowCache[idx] = { fcost, fdisc, kwcost, kwdisc, final, dfinal };
 
+  // DOM 업데이트 (이 행만)
+  const fmt   = (v) => v > 0 ? v.toLocaleString(undefined, {maximumFractionDigits:0}) : '—';
+  const setTd = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   setTd(`dr-fcost-${idx}`,    fmt(fcost));
   setTd(`dr-fdisc-${idx}`,    fmt(fdisc));
   setTd(`dr-kwprice-${idx}`,  fmt(kwprice));
@@ -2424,21 +2449,28 @@ function calcDetailRow(idx) {
   setTd(`dr-final-${idx}`,    fmt(final));
   setTd(`dr-discfinal-${idx}`,fmt(dfinal));
 
-  calcDetailSubtotals();
-  applyAllLinkRules();
+  // 소계·합계·링크 업데이트는 debounce 처리 (연속 입력 시 불필요한 재계산 방지)
+  _debouncedRecalcAll();
 }
 
-// 소계 행 갱신
+// debounce로 묶인 전체 재계산 (80ms 후 한 번만 실행)
+const _debouncedRecalcAll = debounce(() => {
+  calcDetailSubtotals();
+  applyAllLinkRules();
+}, 80);
+
+// 소계 행 갱신 + 전체 합계 (단일 순회, _rowCache 사용)
 function calcDetailSubtotals() {
-  const allRows = Array.from(document.querySelectorAll('#detail-rows tr'));
+  const allRows = document.querySelectorAll('#detail-rows tr');
   let accum = { fcost:0, fdisc:0, kwcost:0, kwdisc:0, final:0, dfinal:0 };
+  let total = 0;
+  const fmt   = v => v > 0 ? v.toLocaleString(undefined, {maximumFractionDigits:0}) : '—';
+  const setTd = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
 
   allRows.forEach(tr => {
+    const idx = tr.id.replace('dr-', '');
     if (tr.classList.contains('dt-subtotal')) {
       // 소계 표시 후 누적 초기화
-      const idx = tr.id.replace('dr-', '');
-      const fmt = v => v > 0 ? v.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
-      const setTd = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
       setTd(`dr-fcost-${idx}`,    fmt(accum.fcost));
       setTd(`dr-fdisc-${idx}`,    fmt(accum.fdisc));
       setTd(`dr-kwcost-${idx}`,   fmt(accum.kwcost));
@@ -2447,24 +2479,25 @@ function calcDetailSubtotals() {
       setTd(`dr-discfinal-${idx}`,fmt(accum.dfinal));
       accum = { fcost:0, fdisc:0, kwcost:0, kwdisc:0, final:0, dfinal:0 };
     } else {
-      const idx = tr.id.replace('dr-', '');
-      const g = id => { const el = document.getElementById(id); return parseFloat((el?.textContent||'').replace(/,/g,'')) || 0; };
-      accum.fcost  += g(`dr-fcost-${idx}`);
-      accum.fdisc  += g(`dr-fdisc-${idx}`);
-      accum.kwcost += g(`dr-kwcost-${idx}`);
-      accum.kwdisc += g(`dr-kwdisc-${idx}`);
-      accum.final  += g(`dr-final-${idx}`);
-      accum.dfinal += g(`dr-discfinal-${idx}`);
+      // _rowCache 우선 사용 (DOM 파싱 불필요)
+      const c = _rowCache[idx];
+      if (c) {
+        accum.fcost  += c.fcost  || 0;
+        accum.fdisc  += c.fdisc  || 0;
+        accum.kwcost += c.kwcost || 0;
+        accum.kwdisc += c.kwdisc || 0;
+        accum.final  += c.final  || 0;
+        accum.dfinal += c.dfinal || 0;
+        total        += c.final  || 0;
+      } else {
+        // 캐시 없으면 DOM fallback
+        const v = parseFloat((document.getElementById(`dr-final-${idx}`)?.textContent||'').replace(/,/g,'') || '0');
+        accum.final += v;
+        total       += v;
+      }
     }
   });
 
-  // 전체 합계
-  let total = 0;
-  allRows.forEach(tr => {
-    if (tr.classList.contains('dt-subtotal')) return;
-    const idx = tr.id.replace('dr-', '');
-    total += parseFloat((document.getElementById(`dr-final-${idx}`)?.textContent||'').replace(/,/g,'')) || 0;
-  });
   const el = document.getElementById('detail-total');
   if (el) el.textContent = total > 0 ? total.toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
 }
