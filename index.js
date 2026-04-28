@@ -1523,9 +1523,19 @@ function renderRegQuotation(el, prefill = null) {
   _qDetailIdx  = 0;
   _qSheetRows  = [];
   _qLinkRules  = [];
+  // localStorage 초기화 - 이전 견적 데이터가 남아있으면 새 견적에 오염됨
+  clearQsStorage();
 
   // 초기 행 생성
   addDetailRow();
+}
+
+// 고객용 견적서 관련 localStorage 전체 초기화
+function clearQsStorage() {
+  try {
+    localStorage.removeItem('sgintech_quot_sheet_saved');
+    localStorage.removeItem('sgintech_quot_sheet_data');
+  } catch(e) {}
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2228,14 +2238,26 @@ function applyAllLinkRules() {
   _qSheetRows.forEach(r => { r.amt = 0; });
 
   // 2) 세부내역 각 행의 linkto → 해당 sheetRow에 견적가 합산
-  // _rowCache 우선 사용으로 DOM 조회 제거
+  const _allQsRows = getQsRows();  // 항상 최신 데이터로
   document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)').forEach(tr => {
     const idx    = tr.id.replace('dr-', '');
     const linkto = document.getElementById(`dr-linkto-${idx}`)?.value || '';
     if (!linkto) return;
     const amt = (_rowCache[idx]?.final
       ?? parseFloat((document.getElementById(`dr-final-${idx}`)?.textContent||'').replace(/,/g,'') || '0'));
-    const row = _qSheetRows.find(r => r.id === linkto);
+    // _qSheetRows 또는 getQsRows() 둘 다 검색
+    let row = _qSheetRows.find(r => r.id === linkto);
+    if (!row) {
+      // getQsRows()에서 찾아서 _qSheetRows에 동기화
+      const qr = _allQsRows.find(r => r.id === linkto);
+      if (qr) {
+        // _qSheetRows가 비어있으면 전체 동기화
+        if (!_qSheetRows.length) {
+          _qSheetRows = _allQsRows.map(r => ({...r, amt: 0}));
+        }
+        row = _qSheetRows.find(r => r.id === linkto);
+      }
+    }
     if (row) row.amt = (row.amt || 0) + amt;
   });
 
@@ -2706,9 +2728,10 @@ async function submitQuotation(editQuotNo = null) {
     } else {
       const res = await api({ action: 'addQuotation', header, lines });
       showToast(`견적이 저장되었습니다 (${res.quotNo})`, 'success');
-      // 신규 저장: 목록으로 이동
+      // 신규 저장: localStorage 정리 후 목록으로 이동
       _qClientIdx = 0; _qDetailIdx = 0; _qLinkRules = [];
       _qSheetRows = [];
+      clearQsStorage();
       window._editingQuotNo = null;
       navigate('list-quotation');
     }
@@ -3208,6 +3231,9 @@ function editQuotation(h, lines) {
       note: l['비고'] || '',
     }));
     _qClientIdx = _qSheetRows.length;
+    // localStorage를 이 견적의 데이터로 교체 (이전 견적 오염 방지)
+    clearQsStorage();
+    pushQsDataToStorage();
     updateQuotSheetBadge();
 
     // ── 세부내역 행 복원 (detail + subtotal 모두 순번 순서대로)
