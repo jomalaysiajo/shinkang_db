@@ -1978,23 +1978,27 @@ function calcTotal() {
 }
 
 // ── 초기화 ────────────────────────────────────────────────
+// QS_KEY(부모창이 방금 밀어넣은 데이터) 우선 로드
 loadData(false);
-// 저장된 편집 내용 있으면 복원
-try {
-  const saved = localStorage.getItem(SAVE_KEY);
-  if (saved) {
-    const sd = JSON.parse(saved);
-    if (sd.rows && sd.rows.length) {
-      rows = sd.rows;
-      document.getElementById('qs-plant').value    = sd.plant    || '';
-      document.getElementById('qs-projname').value = sd.projname || '';
-      clientIdx = rows.reduce((max, r) => {
-        const n = parseInt(r.id.replace(/\\D/g,'')) || 0;
-        return Math.max(max, n + 1);
-      }, 0);
+
+// QS_KEY에 데이터가 없을 때만 SAVE_KEY(이전 편집본) 사용
+if (!rows.length) {
+  try {
+    const saved = localStorage.getItem(SAVE_KEY);
+    if (saved) {
+      const sd = JSON.parse(saved);
+      if (sd.rows && sd.rows.length) {
+        rows = sd.rows;
+        document.getElementById('qs-plant').value    = sd.plant    || '';
+        document.getElementById('qs-projname').value = sd.projname || '';
+        clientIdx = rows.reduce((max, r) => {
+          const n = parseInt(r.id.replace(/\\D/g,'')) || 0;
+          return Math.max(max, n + 1);
+        }, 0);
+      }
     }
-  }
-} catch(e) {}
+  } catch(e) {}
+}
 
 renderRows();
 ${SCC}
@@ -2661,16 +2665,16 @@ async function submitQuotation(editQuotNo = null) {
     projname: document.getElementById('qs-projname')?.value || '',
   };
   const clientLines = _qSheetRows.map((row, i) => ({
-    '_type':  'client',
-    '_rowtype': row.type,
-    '순번':   i + 1,
-    'No':     row.no   || '',
-    '품명':   row.name || '',
-    '형번':   row.spec || '',
-    '단위':   row.unit || '',
-    '수량':   row.qty  || '',
-    '금액':   row.amt  || 0,
-    '비고':   row.note || '',
+    '_type':    'client',
+    '_rowtype': row.type  || 'item',
+    '순번':     i + 1,
+    'No':       row.no    || '',
+    '품명':     row.name  || '',
+    '형번':     row.spec  || '',
+    '단위':     row.unit  || '',
+    '수량':     row.qty   || '',
+    '금액':     row.amt   || 0,
+    '비고':     row.note  || '',
   }));
   header['sheetMeta'] = JSON.stringify(sheetMeta);
 
@@ -3220,9 +3224,9 @@ function editQuotation(h, lines) {
     // ── 고객용 견적서 행 복원 (_qSheetRows)
     const clientLinesSaved = lines.filter(l => l['_type'] === 'client');
     _qSheetRows = clientLinesSaved.map((l, i) => ({
-      id:   'rc-' + i,
+      id:   'rc-edit-' + i + '-' + Date.now(),  // 고유 id
       type: l['_rowtype'] || 'item',
-      no:   l['No']  || l['순번'] || '',
+      no:   String(l['No'] || '').trim() || String(l['순번'] || ''),
       name: l['품명'] || '',
       spec: l['형번'] || '',
       unit: l['단위'] || '',
@@ -3231,7 +3235,7 @@ function editQuotation(h, lines) {
       note: l['비고'] || '',
     }));
     _qClientIdx = _qSheetRows.length;
-    // localStorage를 이 견적의 데이터로 교체 (이전 견적 오염 방지)
+    // localStorage를 이 견적 데이터로 교체 후 새창에 전달 준비
     clearQsStorage();
     pushQsDataToStorage();
     updateQuotSheetBadge();
@@ -3248,14 +3252,18 @@ function editQuotation(h, lines) {
 
     // 견적서No.(문자열) → sheetRow id 매핑 테이블
     const noToId = {};
-    _qSheetRows.forEach(r => { if (r.no) noToId[String(r.no)] = r.id; });
+    _qSheetRows.forEach((r, i) => {
+      if (r.no) noToId[String(r.no).trim()] = r.id;
+      noToId[String(i)]       = r.id;  // 순번 index도 매핑
+      noToId[String(i + 1)]   = r.id;  // 1-based 순번
+    });
 
     allDetailLines.forEach(l => {
       if (l['_type'] === 'subtotal') {
         addDetailSubtotal();  // 소계 행 복원
         return;
       }
-      const savedNo  = l['견적서No'] || '';
+      const savedNo  = String(l['견적서No'] || '').trim();
       const linktoId = noToId[savedNo] || '';
       addDetailRow({
         '견적서No': linktoId,
