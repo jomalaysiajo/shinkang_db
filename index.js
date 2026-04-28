@@ -2321,6 +2321,7 @@ function refreshQsNoDropdowns() {
     if (!sel) return;
     const cur = sel.value;
     sel.innerHTML = buildQsNoOpts(cur);
+    highlightLinkto(sel);  // 강조 상태도 갱신
   });
 }
 
@@ -2358,8 +2359,9 @@ function addDetailRow(data = {}) {
   tr.innerHTML = `
     <td class="line-no" style="text-align:center;font-size:10px;color:var(--text3);user-select:none"></td>
     <td>
-      <select class="dt-input" id="dr-linkto-${idx}" style="width:84px;font-size:10px"
-              onchange="applyDetailLink(${idx})"
+      <select class="dt-input" id="dr-linkto-${idx}"
+              style="width:84px;font-size:10px;background:var(--bg3);color:var(--text)"
+              onchange="applyDetailLink(${idx}); highlightLinkto(this)"
               title="이 행의 견적가를 합산할 고객용 견적서 항목">
         ${qsNoOpts}
       </select>
@@ -2394,16 +2396,36 @@ function addDetailRow(data = {}) {
     </td>`;
   tbody.appendChild(tr);
   reindexDetailRows();
+  // linkto 드롭다운 초기 강조
+  const selEl = document.getElementById(`dr-linkto-${idx}`);
+  if (selEl) highlightLinkto(selEl);
   if (data['외화단가']||data.외화단가||data['수량']||data.수량) calcDetailRow(idx);
   return id;
 }
 
-// 새창이 열려있거나 localStorage에 데이터 있으면 드롭다운 즉시 갱신
-// (addDetailRow 직후 호출 불필요 - refreshQsNoDropdowns가 전체 갱신)
-
 // 견적서No. 선택 → applyAllLinkRules 트리거
 function applyDetailLink(idx) {
+  const sel = document.getElementById(`dr-linkto-${idx}`);
+  if (sel) highlightLinkto(sel);
   applyAllLinkRules();
+}
+
+// 선택값 있으면 파란색 배경, 없으면 기본
+function highlightLinkto(sel) {
+  if (sel.value) {
+    sel.style.background = 'rgba(37,99,235,0.2)';
+    sel.style.color = 'var(--accent)';
+    sel.style.fontWeight = '600';
+  } else {
+    sel.style.background = 'var(--bg3)';
+    sel.style.color = 'var(--text)';
+    sel.style.fontWeight = '';
+  }
+}
+
+// 모든 linkto 드롭다운 강조 갱신
+function refreshLinktoHighlights() {
+  document.querySelectorAll('[id^="dr-linkto-"]').forEach(sel => highlightLinkto(sel));
 }
 
 function addDetailSubtotal() {
@@ -2640,8 +2662,11 @@ async function submitQuotation(editQuotNo = null) {
       return;
     }
     const linktoId    = document.getElementById(`dr-linkto-${idx}`)?.value || '';
-    const linktoRow   = _qSheetRows.find(r => r.id === linktoId);
-    const linktoNo    = linktoRow?.no || '';
+    // _qSheetRows가 비어있을 수 있으므로 getQsRows()로 전체 소스 검색
+    const allQsRows   = getQsRows();
+    const linktoRow   = allQsRows.find(r => r.id === linktoId)
+                     || _qSheetRows.find(r => r.id === linktoId);
+    const linktoNo    = linktoRow?.no || linktoId || '';  // id도 fallback으로 저장
     detailLines.push({
       '_type':     'detail',
       '순번':      i + 1,
@@ -2672,17 +2697,21 @@ async function submitQuotation(editQuotNo = null) {
   try {
     if (editQuotNo) {
       await api({ action: 'updateQuot', quotNo: editQuotNo, header, lines });
-      showToast('견적이 수정되었습니다');
+      showToast(`견적이 수정되었습니다 (${editQuotNo})`, 'success');
+      // 수정 시: 목록으로 이동하지 않고 현재 페이지 유지
+      // 저장 버튼만 원래대로 복원
+      window._editingQuotNo = null;
+      const sb = document.getElementById('quot-save-btn');
+      if (sb) { sb.textContent = '💾 저장'; delete sb.dataset.editno; }
     } else {
       const res = await api({ action: 'addQuotation', header, lines });
-      showToast(`견적이 저장되었습니다 (${res.quotNo})`);
+      showToast(`견적이 저장되었습니다 (${res.quotNo})`, 'success');
+      // 신규 저장: 목록으로 이동
+      _qClientIdx = 0; _qDetailIdx = 0; _qLinkRules = [];
+      _qSheetRows = [];
+      window._editingQuotNo = null;
+      navigate('list-quotation');
     }
-    _qClientIdx = 0; _qDetailIdx = 0; _qLinkRules = [];
-    window._editingQuotNo = null;  // 수정 모드 해제
-    // 저장 버튼도 신규 모드로 복원
-    const sb = document.getElementById('quot-save-btn');
-    if (sb) { sb.textContent = '💾 저장'; delete sb.dataset.editno; }
-    navigate('list-quotation');
   } catch(e) {
     showToast('저장 실패: ' + e.message, 'error');
   } finally {
