@@ -1714,7 +1714,7 @@ ${STC}
   <button class="btn btn-secondary btn-sm" onclick="addGroup()">+ 그룹</button>
   <button class="btn btn-secondary btn-sm" onclick="addItem()">+ 세부항목</button>
   <button class="btn btn-success btn-sm" onclick="refreshData()" title="세부내역 변경사항 반영">🔄 새로고침</button>
-  <button class="btn btn-primary btn-sm" onclick="saveAndClose()">✓ 저장 & 닫기</button>
+  <button class="btn btn-primary btn-sm" onclick="saveOnly()">✓ 저장</button>
 </div>
 
 <div class="proj-info">
@@ -1840,10 +1840,21 @@ window.addEventListener('message', e => {
   }
 });
 
-// ── 저장 & 닫기 ──────────────────────────────────────────
+// ── 저장 (닫지 않음) ─────────────────────────────────────
+function saveOnly() {
+  saveData();
+  notifyParent();
+  // 부모창에 저장 알림 (닫지 않음)
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage({ type: 'QS_SAVED', key: SAVE_KEY }, '*');
+  }
+  // 저장 완료 배너 표시
+  showSyncBanner('✅ 저장되었습니다');
+}
+
+// ── 저장 & 닫기 (내부용, 직접 호출 시) ──────────────────
 function saveAndClose() {
   saveData();
-  // 부모창에 저장된 데이터 전달
   if (window.opener && !window.opener.closed) {
     window.opener.postMessage({ type: 'QS_SAVED', key: SAVE_KEY }, '*');
   }
