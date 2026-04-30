@@ -1534,7 +1534,7 @@ function renderRegQuotation(el, prefill = null) {
 function clearQsStorage() {
   try {
     localStorage.removeItem('sgintech_quot_sheet_saved');
-    localStorage.removeItem('sgintech_quot_sheet_data');
+    localStorage.removeItem('sgintech_quot_sheet_data');   // QS_WINDOW_KEY
   } catch(e) {}
 }
 
@@ -1600,14 +1600,45 @@ function syncQsWindow() {
 function pushQsDataToStorage() {
   const plant    = document.getElementById('qs-plant')?.value    || '';
   const projname = document.getElementById('qs-projname')?.value || '';
+  const payload  = JSON.stringify({ rows: _qSheetRows, plant, projname, ts: Date.now() });
   try {
-    localStorage.setItem(QS_WINDOW_KEY, JSON.stringify({
-      rows:     _qSheetRows,
-      plant,
-      projname,
-      ts: Date.now(),
-    }));
+    // QS_WINDOW_KEY: 새창에 전달용
+    localStorage.setItem(QS_WINDOW_KEY, payload);
+    // SAVE_KEY: getQsRows 1순위 — 부모창 데이터로 덮어씌워 id 불일치 방지
+    localStorage.setItem('sgintech_quot_sheet_saved', payload);
   } catch(e) {}
+}
+
+// 새창에서 저장된 rows를 부모창 _qSheetRows에 병합
+// no, name, spec, unit, qty, amt, note를 새창 데이터로 업데이트
+// id는 부모창 것을 유지 (드롭다운 value와 일치)
+function _mergeQsRowsFromWindow(windowRows) {
+  if (!windowRows || !windowRows.length) return;
+  if (!_qSheetRows.length) {
+    // _qSheetRows가 비어있으면 새창 rows를 그대로 사용
+    _qSheetRows = windowRows.map((r, i) => ({ ...r }));
+    return;
+  }
+  // 순번(index) 기준으로 데이터 병합
+  windowRows.forEach((wr, i) => {
+    if (_qSheetRows[i]) {
+      _qSheetRows[i].no   = wr.no   || _qSheetRows[i].no;
+      _qSheetRows[i].name = wr.name || _qSheetRows[i].name;
+      _qSheetRows[i].spec = wr.spec || _qSheetRows[i].spec;
+      _qSheetRows[i].unit = wr.unit || _qSheetRows[i].unit;
+      _qSheetRows[i].qty  = wr.qty  != null ? wr.qty  : _qSheetRows[i].qty;
+      _qSheetRows[i].amt  = wr.amt  != null ? wr.amt  : _qSheetRows[i].amt;
+      _qSheetRows[i].note = wr.note || _qSheetRows[i].note;
+      _qSheetRows[i].type = wr.type || _qSheetRows[i].type;
+    } else {
+      // 새창에서 추가된 행
+      _qSheetRows.push({ ...wr, id: 'rc-new-' + i + '-' + Date.now() });
+    }
+  });
+  // 새창에서 삭제된 행 제거
+  if (windowRows.length < _qSheetRows.length) {
+    _qSheetRows = _qSheetRows.slice(0, windowRows.length);
+  }
 }
 
 function buildQsWindowHtml() {
@@ -2318,19 +2349,20 @@ const DETAIL_LS_KEY = 'sgintech_col_detail-table';
 // 견적서No. 드롭다운 옵션 빌드
 // '-' 포함된 번호(세부항목)만 표시 (예: 1-1, 1-2, 2-1)
 // 고객용 견적서 데이터 읽기
-// 우선순위: 1) localStorage(SAVE_KEY) 저장본 2) _qSheetRows 3) QS_WINDOW_KEY
+// 우선순위: 1) 부모창 메모리(_qSheetRows) 2) QS_WINDOW_KEY 3) SAVE_KEY
+// SAVE_KEY는 새창 rows를 저장하므로 id 체계가 달라 마지막 순위
 function getQsRows() {
-  // 새창에서 저장한 최신 데이터 우선
-  try {
-    const saved = JSON.parse(localStorage.getItem('sgintech_quot_sheet_saved') || 'null');
-    if (saved && saved.rows && saved.rows.length) return saved.rows;
-  } catch(e) {}
-  // 부모창 메모리
+  // 1) 부모창 메모리 — 가장 신뢰할 수 있는 최신 데이터
   if (_qSheetRows && _qSheetRows.length) return _qSheetRows;
-  // 새창에 전달용 스토리지
+  // 2) QS_WINDOW_KEY — 부모창이 pushQsDataToStorage로 저장한 데이터
   try {
     const d = JSON.parse(localStorage.getItem('sgintech_quot_sheet_data') || 'null');
     if (d && d.rows && d.rows.length) return d.rows;
+  } catch(e) {}
+  // 3) SAVE_KEY — 새창에서 저장한 데이터 (id 체계가 다를 수 있음)
+  try {
+    const saved = JSON.parse(localStorage.getItem('sgintech_quot_sheet_saved') || 'null');
+    if (saved && saved.rows && saved.rows.length) return saved.rows;
   } catch(e) {}
   return [];
 }
@@ -2698,12 +2730,12 @@ async function submitQuotation(editQuotNo = null) {
       detailLines.push({ '_type': 'subtotal', '순번': i + 1 });
       return;
     }
-    const linktoId    = document.getElementById(`dr-linkto-${idx}`)?.value || '';
-    // _qSheetRows가 비어있을 수 있으므로 getQsRows()로 전체 소스 검색
-    const allQsRows   = getQsRows();
-    const linktoRow   = allQsRows.find(r => r.id === linktoId)
-                     || _qSheetRows.find(r => r.id === linktoId);
-    const linktoNo    = linktoRow?.no || linktoId || '';  // id도 fallback으로 저장
+    const linktoId  = document.getElementById(`dr-linkto-${idx}`)?.value || '';
+    // _qSheetRows 우선(부모창 메모리), getQsRows()로 보완
+    const linktoRow = _qSheetRows.find(r => r.id === linktoId)
+                   || getQsRows().find(r => r.id === linktoId);
+    // no 값(예: '1-1')만 저장. 못 찾으면 빈값 (id를 저장하면 복원 시 매핑 불가)
+    const linktoNo  = linktoRow?.no || '';
     detailLines.push({
       '_type':     'detail',
       '순번':      i + 1,
