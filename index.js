@@ -2703,10 +2703,15 @@ async function submitQuotation(editQuotNo = null) {
   };
 
   // 고객용 견적서 행 (_qSheetRows 기준)
+  // 고객용 견적서 데이터를 sheetMeta JSON에 통째로 저장
+  // (QuotationLine 컬럼 의존 없이 완전한 저장/복원)
   const sheetMeta = {
-    plant:    document.getElementById('qs-plant')?.value    || '',
-    projname: document.getElementById('qs-projname')?.value || '',
+    plant:     document.getElementById('qs-plant')?.value    || '',
+    projname:  document.getElementById('qs-projname')?.value || '',
+    qsRows:    _qSheetRows,   // ← 고객용 견적서 전체 행 데이터
   };
+  header['sheetMeta'] = JSON.stringify(sheetMeta);
+  // clientLines는 호환성 유지용으로만 저장 (sheetMeta가 주 저장소)
   const clientLines = _qSheetRows.map((row, i) => ({
     '_type':    'client',
     '_rowtype': row.type  || 'item',
@@ -2719,7 +2724,6 @@ async function submitQuotation(editQuotNo = null) {
     '금액':     row.amt   || 0,
     '비고':     row.note  || '',
   }));
-  header['sheetMeta'] = JSON.stringify(sheetMeta);
 
   // 세부내역 행
   const detailLines = [];
@@ -3255,30 +3259,52 @@ function editQuotation(h, lines) {
     setSelectByVal('q-staff',   h['담당자ID']);
     setSelectByVal('q-status',  h['상태']);
 
-    // ── sheetMeta 복원
+    // ── sheetMeta 복원 (고객용 견적서 포함)
     try {
-      const meta = JSON.parse(h['sheetMeta']||'{}');
+      const meta = JSON.parse(h['sheetMeta'] || '{}');
       const plantEl    = document.getElementById('qs-plant');
       const projnameEl = document.getElementById('qs-projname');
-      if (plantEl    && meta.plant)    plantEl.value    = meta.plant;
+      if (plantEl    && meta.plant)    plantEl.value = meta.plant;
       if (projnameEl && meta.projname) projnameEl.value = meta.projname;
-    } catch(e) {}
 
-    // ── 고객용 견적서 행 복원 (_qSheetRows)
-    const clientLinesSaved = lines.filter(l => l['_type'] === 'client');
-    _qSheetRows = clientLinesSaved.map((l, i) => ({
-      id:   'rc-edit-' + i + '-' + Date.now(),  // 고유 id
-      type: l['_rowtype'] || 'item',
-      no:   String(l['No'] || '').trim() || String(l['순번'] || ''),
-      name: l['품명'] || '',
-      spec: l['형번'] || '',
-      unit: l['단위'] || '',
-      qty:  Number(l['수량']) || 0,
-      amt:  Number(l['금액']) || 0,
-      note: l['비고'] || '',
-    }));
+      // sheetMeta.qsRows가 있으면 그것을 1순위로 사용 (가장 완전한 데이터)
+      if (meta.qsRows && meta.qsRows.length) {
+        _qSheetRows = meta.qsRows.map((r, i) => ({
+          ...r,
+          id: 'rc-edit-' + i + '-' + Date.now(),  // id 재발급
+        }));
+      } else {
+        // fallback: QuotationLine의 client 행에서 복원
+        const clientLinesSaved = lines.filter(l => l['_type'] === 'client');
+        _qSheetRows = clientLinesSaved.map((l, i) => ({
+          id:   'rc-edit-' + i + '-' + Date.now(),
+          type: l['_rowtype'] || 'item',
+          no:   String(l['No'] || '').trim() || String(l['순번'] || ''),
+          name: l['품명'] || '',
+          spec: l['형번'] || '',
+          unit: l['단위'] || '',
+          qty:  Number(l['수량']) || 0,
+          amt:  Number(l['금액']) || 0,
+          note: l['비고'] || '',
+        }));
+      }
+    } catch(e) {
+      // 예외 시 QuotationLine fallback
+      const clientLinesSaved = lines.filter(l => l['_type'] === 'client');
+      _qSheetRows = clientLinesSaved.map((l, i) => ({
+        id:   'rc-edit-' + i + '-' + Date.now(),
+        type: l['_rowtype'] || 'item',
+        no:   String(l['No'] || '').trim(),
+        name: l['품명'] || '',
+        spec: l['형번'] || '',
+        unit: l['단위'] || '',
+        qty:  Number(l['수량']) || 0,
+        amt:  Number(l['금액']) || 0,
+        note: l['비고'] || '',
+      }));
+    }
     _qClientIdx = _qSheetRows.length;
-    // localStorage를 이 견적 데이터로 교체 후 새창에 전달 준비
+    // localStorage를 이 견적 데이터로 교체
     clearQsStorage();
     pushQsDataToStorage();
     updateQuotSheetBadge();
@@ -3293,17 +3319,18 @@ function editQuotation(h, lines) {
         (l['_type'] !== 'client' && (l['품명'] || l['외화단가'] || l['수량'])))
       .sort((a, b) => Number(a['순번']||0) - Number(b['순번']||0));
 
-    // 견적서No.(문자열) → sheetRow id 매핑 테이블
+    // 견적서No.(문자열 '1-1' 등) → 복원된 sheetRow id 매핑
     const noToId = {};
     _qSheetRows.forEach((r, i) => {
-      if (r.no) noToId[String(r.no).trim()] = r.id;
-      noToId[String(i)]       = r.id;  // 순번 index도 매핑
-      noToId[String(i + 1)]   = r.id;  // 1-based 순번
+      const noStr = String(r.no || '').trim();
+      if (noStr) noToId[noStr] = r.id;          // no 기반 (가장 중요)
+      noToId[String(i)]       = r.id;            // 0-based index
+      noToId[String(i + 1)]   = r.id;            // 1-based index
     });
 
     allDetailLines.forEach(l => {
       if (l['_type'] === 'subtotal') {
-        addDetailSubtotal();  // 소계 행 복원
+        addDetailSubtotal();
         return;
       }
       const savedNo  = String(l['견적서No'] || '').trim();
