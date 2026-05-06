@@ -2227,7 +2227,8 @@ function qsCalcRow(i) {
 }
 
 function qsUpdateRowDisplay(rowId) {
-  const row = _qSheetRows.find(r => r.id === rowId);
+  // rowId는 id 또는 no 값일 수 있음
+  const row = _qSheetRows.find(r => r.id === rowId || String(r.no) === rowId);
   if (!row) return;
   const amtEl  = document.getElementById('qs-amt-' + rowId);
   const upEl   = document.getElementById('qs-unitprice-' + rowId);
@@ -2283,27 +2284,17 @@ function applyAllLinkRules() {
   // 1) 모든 sheetRow amt 초기화
   _qSheetRows.forEach(r => { r.amt = 0; });
 
-  // 2) 세부내역 각 행의 linkto → 해당 sheetRow에 견적가 합산
-  const _allQsRows = getQsRows();  // 항상 최신 데이터로
+  // 2) 세부내역 각 행의 linkto(no 값) → sheetRow에 견적가 합산
+  const _allQsRows = getQsRows();
   document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)').forEach(tr => {
     const idx    = tr.id.replace('dr-', '');
-    const linkto = document.getElementById(`dr-linkto-${idx}`)?.value || '';
-    if (!linkto) return;
+    const noVal  = document.getElementById(`dr-linkto-${idx}`)?.value || '';
+    if (!noVal) return;
     const amt = (_rowCache[idx]?.final
       ?? parseFloat((document.getElementById(`dr-final-${idx}`)?.textContent||'').replace(/,/g,'') || '0'));
-    // _qSheetRows 또는 getQsRows() 둘 다 검색
-    let row = _qSheetRows.find(r => r.id === linkto);
-    if (!row) {
-      // getQsRows()에서 찾아서 _qSheetRows에 동기화
-      const qr = _allQsRows.find(r => r.id === linkto);
-      if (qr) {
-        // _qSheetRows가 비어있으면 전체 동기화
-        if (!_qSheetRows.length) {
-          _qSheetRows = _allQsRows.map(r => ({...r, amt: 0}));
-        }
-        row = _qSheetRows.find(r => r.id === linkto);
-      }
-    }
+    // select value = no 값('1-1')으로 sheetRow 찾기
+    const row = _allQsRows.find(r => String(r.no) === noVal)
+             || _qSheetRows.find(r => String(r.no) === noVal);
     if (row) row.amt = (row.amt || 0) + amt;
   });
 
@@ -2368,16 +2359,17 @@ function getQsRows() {
 }
 
 // '-' 포함된 세부항목(item)만 드롭다운에 표시
+// option value = r.no ('1-1' 등) — id 변환 없이 직접 사용
 function buildQsNoOpts(selected='') {
   const rows = getQsRows();
   let opts = '<option value="">—</option>';
   rows
     .filter(r => r.type === 'item' && r.no && String(r.no).includes('-'))
     .forEach(r => {
-      const label = `${r.no}${r.name ? ' ' + r.name : ''}`;
-      // selected는 id 또는 no 둘 다 매칭
-      const isSel = selected === r.id || selected === r.no;
-      opts += `<option value="${r.id}" ${isSel ? 'selected' : ''}>${label}</option>`;
+      const noStr  = String(r.no);
+      const label  = noStr + (r.name ? ' ' + r.name : '');
+      const isSel  = selected === noStr;
+      opts += `<option value="${noStr}" ${isSel ? 'selected' : ''}>${label}</option>`;
     });
   return opts;
 }
@@ -2734,12 +2726,8 @@ async function submitQuotation(editQuotNo = null) {
       detailLines.push({ '_type': 'subtotal', '순번': i + 1 });
       return;
     }
-    const linktoId  = document.getElementById(`dr-linkto-${idx}`)?.value || '';
-    // _qSheetRows 우선(부모창 메모리), getQsRows()로 보완
-    const linktoRow = _qSheetRows.find(r => r.id === linktoId)
-                   || getQsRows().find(r => r.id === linktoId);
-    // no 값(예: '1-1')만 저장. 못 찾으면 빈값 (id를 저장하면 복원 시 매핑 불가)
-    const linktoNo  = linktoRow?.no || '';
+    // select value가 이미 no 값('1-1' 등)이므로 그대로 사용
+    const linktoNo  = document.getElementById(`dr-linkto-${idx}`)?.value || '';
     detailLines.push({
       '_type':     'detail',
       '순번':      i + 1,
@@ -3339,25 +3327,15 @@ function _applyPendingEdit() {
     })
     .sort((a, b) => Number(a['순번'] || 0) - Number(b['순번'] || 0));
 
-  // no → 복원된 _qSheetRows id 매핑
-  const noToId = {};
-  _qSheetRows.forEach((r, i) => {
-    const noStr = String(r.no || '').trim();
-    if (noStr) noToId[noStr] = r.id;
-    noToId[String(i)]     = r.id;
-    noToId[String(i + 1)] = r.id;
-  });
-
+  // 견적서No가 이미 no 값('1-1' 등)이므로 바로 select value로 사용
   allDetailLines.forEach(l => {
     if (l['_type'] === 'subtotal') {
       addDetailSubtotal();
       return;
     }
-    const savedNo  = String(l['견적서No'] || '').trim();
-    const linktoId = noToId[savedNo] || '';
+    const savedNo = String(l['견적서No'] || '').trim();
     addDetailRow({
-      '견적서No': linktoId,
-      '구분':     l['구분']     || '',
+      '견적서No': savedNo,   // select value = no 값
       'ItemNo':   l['ItemNo']   || '',
       '품명':     l['품명']     || '',
       '단위':     l['단위']     || '',
