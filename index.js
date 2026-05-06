@@ -2288,7 +2288,8 @@ function applyAllLinkRules() {
   const _allQsRows = getQsRows();
   document.querySelectorAll('#detail-rows tr:not(.dt-subtotal)').forEach(tr => {
     const idx    = tr.id.replace('dr-', '');
-    const noVal  = document.getElementById(`dr-linkto-${idx}`)?.value || '';
+    const _sel   = document.getElementById(`dr-linkto-${idx}`);
+    const noVal  = _sel?.value || _sel?.dataset?.no || '';
     if (!noVal) return;
     const amt = (_rowCache[idx]?.final
       ?? parseFloat((document.getElementById(`dr-final-${idx}`)?.textContent||'').replace(/,/g,'') || '0'));
@@ -2380,9 +2381,16 @@ function refreshQsNoDropdowns() {
     const idx = tr.id.replace('dr-', '');
     const sel = document.getElementById(`dr-linkto-${idx}`);
     if (!sel) return;
-    const cur = sel.value;
+    // data-no 속성을 우선 사용 (빈 _qSheetRows로 리셋된 경우 복구)
+    const cur = sel.value || sel.dataset.no || '';
     sel.innerHTML = buildQsNoOpts(cur);
-    highlightLinkto(sel);  // 강조 상태도 갱신
+    // 선택된 값이 있으면 data-no 갱신
+    if (sel.value) sel.dataset.no = sel.value;
+    else if (cur) {
+      // 옵션이 없어서 sel.value가 ''인 경우 나중을 위해 보관
+      sel.dataset.no = cur;
+    }
+    highlightLinkto(sel);
   });
 }
 
@@ -2422,7 +2430,8 @@ function addDetailRow(data = {}) {
     <td>
       <select class="dt-input" id="dr-linkto-${idx}"
               style="width:84px;font-size:10px;background:var(--bg3);color:var(--text)"
-              onchange="applyDetailLink(${idx}); highlightLinkto(this)"
+              onchange="applyDetailLink(${idx}); highlightLinkto(this); this.dataset.no=this.value"
+              data-no="${linkto}"
               title="이 행의 견적가를 합산할 고객용 견적서 항목">
         ${qsNoOpts}
       </select>
@@ -2467,7 +2476,10 @@ function addDetailRow(data = {}) {
 // 견적서No. 선택 → applyAllLinkRules 트리거
 function applyDetailLink(idx) {
   const sel = document.getElementById(`dr-linkto-${idx}`);
-  if (sel) highlightLinkto(sel);
+  if (sel) {
+    sel.dataset.no = sel.value;  // 선택값을 data-no에 보관
+    highlightLinkto(sel);
+  }
   applyAllLinkRules();
 }
 
@@ -2726,8 +2738,9 @@ async function submitQuotation(editQuotNo = null) {
       detailLines.push({ '_type': 'subtotal', '순번': i + 1 });
       return;
     }
-    // select value가 이미 no 값('1-1' 등)이므로 그대로 사용
-    const linktoNo  = document.getElementById(`dr-linkto-${idx}`)?.value || '';
+    // select value 또는 data-no 속성에서 no 값('1-1' 등) 읽기
+    const _ltSel   = document.getElementById(`dr-linkto-${idx}`);
+    const linktoNo = _ltSel?.value || _ltSel?.dataset?.no || '';
     detailLines.push({
       '_type':     'detail',
       '순번':      i + 1,
@@ -3362,6 +3375,14 @@ function _applyPendingEdit() {
 
   refreshQsNoDropdowns();
   applyAllLinkRules();
+
+  // 타이밍 보장: 50ms 뒤 한 번 더 적용 (getQsRows가 나중에 채워질 경우 대비)
+  setTimeout(() => {
+    if (!document.getElementById('detail-rows')) return;
+    refreshQsNoDropdowns();
+    applyAllLinkRules();
+  }, 150);
+
   showToast('수정 모드 — 내용 변경 후 저장하세요', 'info');
 }
 
