@@ -1518,16 +1518,16 @@ function renderRegQuotation(el, prefill = null) {
     </div>
   </div>`;
 
-  // 상태 초기화
-  _qClientIdx  = 0;
-  _qDetailIdx  = 0;
-  _qSheetRows  = [];
-  _qLinkRules  = [];
-  // localStorage 초기화 - 이전 견적 데이터가 남아있으면 새 견적에 오염됨
-  clearQsStorage();
-
-  // 초기 행 생성
-  addDetailRow();
+  // 수정 모드(window._pendingEditData가 있음)가 아닐 때만 초기화
+  if (!window._pendingEditData) {
+    _qClientIdx  = 0;
+    _qDetailIdx  = 0;
+    _qSheetRows  = [];
+    _qLinkRules  = [];
+    clearQsStorage();
+    addDetailRow();  // 신규: 빈 행 1개
+  }
+  // 수정 모드면 _applyPendingEdit()이 데이터를 채움 (navigate 완료 후 호출됨)
 }
 
 // 고객용 견적서 관련 localStorage 전체 초기화
@@ -3248,121 +3248,143 @@ async function openQuotDetail(quotNo) {
 }
 
 function editQuotation(h, lines) {
+  // navigate 전에 복원할 데이터를 전역에 저장
+  // renderRegQuotation이 이걸 보고 초기화를 건너뜀
+  window._pendingEditData = { h, lines };
   navigate('reg-quotation');
-  setTimeout(() => {
-    // ── 헤더 값 채우기
-    setVal('q-date',   fmtDate(h['견적일']));
-    setVal('q-expire', fmtDate(h['유효기간']));
-    setVal('q-note',   h['비고']||'');
-    setSelectByVal('q-vendor',  h['공급사ID']);
-    setSelectByVal('q-project', h['프로젝트ID']);
-    setSelectByVal('q-staff',   h['담당자ID']);
-    setSelectByVal('q-status',  h['상태']);
+  // renderRegQuotation 완료 후 복원 실행
+  setTimeout(_applyPendingEdit, 50);
+}
 
-    // ── sheetMeta 복원 (고객용 견적서 포함)
-    try {
-      const meta = JSON.parse(h['sheetMeta'] || '{}');
-      const plantEl    = document.getElementById('qs-plant');
-      const projnameEl = document.getElementById('qs-projname');
-      if (plantEl    && meta.plant)    plantEl.value = meta.plant;
-      if (projnameEl && meta.projname) projnameEl.value = meta.projname;
+function _applyPendingEdit() {
+  if (!window._pendingEditData) return;
+  const { h, lines } = window._pendingEditData;
+  window._pendingEditData = null;  // 소비 후 제거
 
-      // sheetMeta.qsRows가 있으면 그것을 1순위로 사용 (가장 완전한 데이터)
-      if (meta.qsRows && meta.qsRows.length) {
-        _qSheetRows = meta.qsRows.map((r, i) => ({
-          ...r,
-          id: 'rc-edit-' + i + '-' + Date.now(),  // id 재발급
-        }));
-      } else {
-        // fallback: QuotationLine의 client 행에서 복원
-        const clientLinesSaved = lines.filter(l => l['_type'] === 'client');
-        _qSheetRows = clientLinesSaved.map((l, i) => ({
-          id:   'rc-edit-' + i + '-' + Date.now(),
-          type: l['_rowtype'] || 'item',
-          no:   String(l['No'] || '').trim() || String(l['순번'] || ''),
-          name: l['품명'] || '',
-          spec: l['형번'] || '',
-          unit: l['단위'] || '',
-          qty:  Number(l['수량']) || 0,
-          amt:  Number(l['금액']) || 0,
-          note: l['비고'] || '',
-        }));
-      }
-    } catch(e) {
-      // 예외 시 QuotationLine fallback
-      const clientLinesSaved = lines.filter(l => l['_type'] === 'client');
-      _qSheetRows = clientLinesSaved.map((l, i) => ({
-        id:   'rc-edit-' + i + '-' + Date.now(),
-        type: l['_rowtype'] || 'item',
-        no:   String(l['No'] || '').trim(),
-        name: l['품명'] || '',
-        spec: l['형번'] || '',
-        unit: l['단위'] || '',
-        qty:  Number(l['수량']) || 0,
-        amt:  Number(l['금액']) || 0,
-        note: l['비고'] || '',
+  // ── 헤더 값 채우기
+  setVal('q-date',   fmtDate(h['견적일']));
+  setVal('q-expire', fmtDate(h['유효기간']));
+  setVal('q-note',   h['비고'] || '');
+  setSelectByVal('q-vendor',  h['공급사ID']);
+  setSelectByVal('q-project', h['프로젝트ID']);
+  setSelectByVal('q-staff',   h['담당자ID']);
+  setSelectByVal('q-status',  h['상태']);
+
+  // ── 고객용 견적서 복원
+  _qSheetRows  = [];
+  _qClientIdx  = 0;
+
+  try {
+    const rawMeta = h['sheetMeta'];
+    const meta = (rawMeta && rawMeta !== '{}' && rawMeta !== 'undefined')
+      ? JSON.parse(rawMeta) : {};
+
+    const plantEl    = document.getElementById('qs-plant');
+    const projnameEl = document.getElementById('qs-projname');
+    if (plantEl    && meta.plant)    plantEl.value    = meta.plant;
+    if (projnameEl && meta.projname) projnameEl.value = meta.projname;
+
+    if (meta.qsRows && meta.qsRows.length) {
+      // 가장 완전한 데이터: sheetMeta.qsRows
+      const ts = Date.now();
+      _qSheetRows = meta.qsRows.map((r, i) => ({
+        ...r,
+        id: 'rce-' + i + '-' + ts,
       }));
     }
-    _qClientIdx = _qSheetRows.length;
-    // localStorage를 이 견적 데이터로 교체
-    clearQsStorage();
-    pushQsDataToStorage();
-    updateQuotSheetBadge();
+  } catch(e) {
+    console.warn('[editQuotation] sheetMeta 파싱 오류:', e);
+  }
 
-    // ── 세부내역 행 복원 (detail + subtotal 모두 순번 순서대로)
-    document.getElementById('detail-rows').innerHTML = '';
-    _qDetailIdx = 0;
+  // sheetMeta에 없으면 QuotationLine client 행 fallback
+  if (!_qSheetRows.length) {
+    const ts = Date.now();
+    const clientSaved = lines.filter(l =>
+      l['_type'] === 'client' ||
+      // _type 컬럼 없을 때: No가 있고 품명이 있는 행
+      (l['No'] && l['품명'] && l['_type'] !== 'detail' && l['_type'] !== 'subtotal')
+    );
+    _qSheetRows = clientSaved.map((l, i) => ({
+      id:   'rce-' + i + '-' + ts,
+      type: l['_rowtype'] || 'item',
+      no:   String(l['No'] || '').trim(),
+      name: l['품명'] || '',
+      spec: l['형번'] || '',
+      unit: l['단위'] || '',
+      qty:  Number(l['수량']) || 0,
+      amt:  Number(l['금액']) || 0,
+      note: l['비고'] || '',
+    }));
+  }
 
-    // subtotal 포함, 순번 순서로 정렬
-    const allDetailLines = lines
-      .filter(l => l['_type'] === 'detail' || l['_type'] === 'subtotal' ||
-        (l['_type'] !== 'client' && (l['품명'] || l['외화단가'] || l['수량'])))
-      .sort((a, b) => Number(a['순번']||0) - Number(b['순번']||0));
+  _qClientIdx = _qSheetRows.length;
+  clearQsStorage();
+  pushQsDataToStorage();
+  updateQuotSheetBadge();
 
-    // 견적서No.(문자열 '1-1' 등) → 복원된 sheetRow id 매핑
-    const noToId = {};
-    _qSheetRows.forEach((r, i) => {
-      const noStr = String(r.no || '').trim();
-      if (noStr) noToId[noStr] = r.id;          // no 기반 (가장 중요)
-      noToId[String(i)]       = r.id;            // 0-based index
-      noToId[String(i + 1)]   = r.id;            // 1-based index
-    });
+  // ── 세부내역 복원
+  const detailContainer = document.getElementById('detail-rows');
+  if (detailContainer) detailContainer.innerHTML = '';
+  _qDetailIdx = 0;
 
-    allDetailLines.forEach(l => {
-      if (l['_type'] === 'subtotal') {
-        addDetailSubtotal();
-        return;
-      }
-      const savedNo  = String(l['견적서No'] || '').trim();
-      const linktoId = noToId[savedNo] || '';
-      addDetailRow({
-        '견적서No': linktoId,
-        '구분':     l['구분']    || '',
-        'ItemNo':   l['ItemNo']  || '',
-        '품명':     l['품명']    || '',
-        '단위':     l['단위']    || '',
-        '통화':     l['통화']    || 'CNY',
-        '외화단가': l['외화단가']|| '',
-        '수량':     l['수량']    || '',
-        '할인율':   l['할인율']  || 0,
-        '환율':     l['환율']    || '',
-        '익율':     l['익율']    || '',
-        '비고':     l['비고']    || '',
-      });
-    });
+  // detail + subtotal 행, 순번 순 정렬
+  // _type 컬럼이 없을 때도 처리: No가 없고 품명/외화단가/수량이 있는 행
+  const allDetailLines = lines
+    .filter(l => {
+      const t = l['_type'] || '';
+      if (t === 'client') return false;
+      if (t === 'detail' || t === 'subtotal') return true;
+      // _type 없을 때 content로 판단
+      return !!(l['품명'] || l['외화단가'] || l['수량']);
+    })
+    .sort((a, b) => Number(a['순번'] || 0) - Number(b['순번'] || 0));
 
-    // ── 저장 버튼 수정 모드
-    // HTML onclick 속성과 충돌하지 않도록 전역변수로 수정 대상 번호 보관
-    window._editingQuotNo = h['QuotNo'];
-    const saveBtn = document.getElementById('quot-save-btn');
-    if (saveBtn) {
-      saveBtn.textContent = '💾 수정 저장';
-      saveBtn.dataset.editno = h['QuotNo'];  // data 속성으로도 보관
+  // no → 복원된 _qSheetRows id 매핑
+  const noToId = {};
+  _qSheetRows.forEach((r, i) => {
+    const noStr = String(r.no || '').trim();
+    if (noStr) noToId[noStr] = r.id;
+    noToId[String(i)]     = r.id;
+    noToId[String(i + 1)] = r.id;
+  });
+
+  allDetailLines.forEach(l => {
+    if (l['_type'] === 'subtotal') {
+      addDetailSubtotal();
+      return;
     }
+    const savedNo  = String(l['견적서No'] || '').trim();
+    const linktoId = noToId[savedNo] || '';
+    addDetailRow({
+      '견적서No': linktoId,
+      '구분':     l['구분']     || '',
+      'ItemNo':   l['ItemNo']   || '',
+      '품명':     l['품명']     || '',
+      '단위':     l['단위']     || '',
+      '통화':     l['통화']     || 'CNY',
+      '외화단가': l['외화단가'] || '',
+      '수량':     l['수량']     || '',
+      '할인율':   l['할인율']   || 0,
+      '환율':     l['환율']     || '',
+      '익율':     l['익율']     || '',
+      '비고':     l['비고']     || '',
+    });
+  });
 
-    applyAllLinkRules();
-    showToast('수정 모드: 내용을 변경 후 저장하세요', 'info');
-  }, 200);
+  // 세부내역이 없으면 빈 행 1개 추가
+  if (!allDetailLines.length) addDetailRow();
+
+  // 저장 버튼 수정 모드
+  window._editingQuotNo = h['QuotNo'];
+  const saveBtn = document.getElementById('quot-save-btn');
+  if (saveBtn) {
+    saveBtn.textContent   = '💾 수정 저장';
+    saveBtn.dataset.editno = h['QuotNo'];
+  }
+
+  refreshQsNoDropdowns();
+  applyAllLinkRules();
+  showToast('수정 모드 — 내용 변경 후 저장하세요', 'info');
 }
 
 async function deleteQuot(quotNo) {
