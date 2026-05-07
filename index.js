@@ -2363,6 +2363,8 @@ function getQsRows() {
 // option value = r.no ('1-1' 등) — id 변환 없이 직접 사용
 function buildQsNoOpts(selected='') {
   const rows = getQsRows();
+  const itemRows = rows.filter(r => r.type === 'item' && r.no && String(r.no).includes('-'));
+  if (selected) console.log(`[buildQsNoOpts] selected="${selected}", rows=${rows.length}, itemRows=${itemRows.length}`, itemRows.map(r=>r.no));
   let opts = '<option value="">—</option>';
   rows
     .filter(r => r.type === 'item' && r.no && String(r.no).includes('-'))
@@ -3260,7 +3262,21 @@ function editQuotation(h, lines) {
 function _applyPendingEdit() {
   if (!window._pendingEditData) return;
   const { h, lines } = window._pendingEditData;
-  window._pendingEditData = null;  // 소비 후 제거
+  window._pendingEditData = null;
+
+  // ══ 디버그 로그 (콘솔에서 확인) ══
+  console.group('[편집 진단]');
+  console.log('1. sheetMeta 원본:', h['sheetMeta']);
+  try {
+    const m = JSON.parse(h['sheetMeta'] || '{}');
+    console.log('2. qsRows 개수:', m.qsRows?.length ?? '없음');
+    console.log('3. qsRows 내용:', JSON.stringify(m.qsRows?.slice(0,3)));
+  } catch(e) { console.warn('sheetMeta 파싱 실패:', e); }
+  console.log('4. lines 전체 개수:', lines.length);
+  const detailSample = lines.filter(l => l['_type'] === 'detail' || l['견적서No']);
+  console.log('5. detail 행 샘플:', JSON.stringify(detailSample.slice(0,3)));
+  console.log('6. 견적서No 값들:', lines.map(l => l['견적서No']).filter(Boolean));
+  console.groupEnd();
 
   // ── 헤더 값 채우기
   setVal('q-date',   fmtDate(h['견적일']));
@@ -3339,6 +3355,12 @@ function _applyPendingEdit() {
       return !!(l['품명'] || l['외화단가'] || l['수량']);
     })
     .sort((a, b) => Number(a['순번'] || 0) - Number(b['순번'] || 0));
+
+  // 디버그: allDetailLines 확인
+  console.log('[편집 진단] allDetailLines 개수:', allDetailLines.length);
+  console.log('[편집 진단] allDetailLines 견적서No:', allDetailLines.map(l => l['견적서No']));
+  console.log('[편집 진단] _qSheetRows 복원 개수:', _qSheetRows.length);
+  console.log('[편집 진단] _qSheetRows 내용:', _qSheetRows.map(r => ({id:r.id, type:r.type, no:r.no})));
 
   // 견적서No가 이미 no 값('1-1' 등)이므로 바로 select value로 사용
   allDetailLines.forEach(l => {
