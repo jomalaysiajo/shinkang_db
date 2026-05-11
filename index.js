@@ -283,6 +283,9 @@ const PAGE_META = {
 };
 
 function navigate(page) {
+  // 모바일: 페이지 이동 시 사이드바 드로어 자동 닫기
+  closeMobileSidebar();
+
   // 사이드바 활성화
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   const items = document.querySelectorAll('.nav-item');
@@ -291,6 +294,9 @@ function navigate(page) {
       el.classList.add('active');
     }
   });
+
+  // 바텀 nav 동기화
+  updateBnav(page);
 
   // 견적 수정 모드 해제 (견적 등록 외 페이지 이동 시)
   if (page !== 'reg-quotation' && window._editingQuotNo) {
@@ -306,6 +312,8 @@ function navigate(page) {
 
   // 페이지 렌더
   const content = document.getElementById('content');
+  // 스크롤 최상단 복귀
+  content.scrollTop = 0;
   switch(page) {
     case 'dashboard':         renderDashboard(content);       break;
     case 'settings-staff':    renderSettingsStaff(content);   break;
@@ -4109,6 +4117,59 @@ function buildDivOpts(target, selected='') {
 // ═══════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// SIDEBAR — 데스크톱 Rail 토글 + 모바일 드로어
+// ═══════════════════════════════════════════════════════
+const SB_LS_KEY = 'sgintech_sidebar_collapsed';
+
+/** 데스크톱: 240px ↔ 60px rail 토글 */
+function toggleSidebar() {
+  const collapsed = document.body.classList.toggle('sidebar-collapsed');
+  localStorage.setItem(SB_LS_KEY, collapsed ? '1' : '');
+}
+
+/** 모바일: 드로어 열기 */
+function toggleMobileSidebar() {
+  document.body.classList.toggle('mobile-sidebar-open');
+}
+
+/** 모바일: 드로어 닫기 (네비게이션 이동·배경 탭 시) */
+function closeMobileSidebar() {
+  document.body.classList.remove('mobile-sidebar-open');
+}
+
+// ─── 바텀 Nav 활성 상태 갱신 ──────────────────────────────
+// 하단 탭 5개: dashboard, list-quotation, list-purchase, list-sales, more(메뉴)
+const BNAV_MAP = {
+  'dashboard':      'bnav-dashboard',
+  'list-quotation': 'bnav-list-quotation',
+  'reg-quotation':  'bnav-list-quotation',
+  'list-purchase':  'bnav-list-purchase',
+  'reg-purchase':   'bnav-list-purchase',
+  'list-sales':     'bnav-list-sales',
+  'reg-sales':      'bnav-list-sales',
+};
+
+function updateBnav(page) {
+  document.querySelectorAll('.bnav-item').forEach(el => el.classList.remove('active'));
+  const id = BNAV_MAP[page];
+  if (id) document.getElementById(id)?.classList.add('active');
+}
+
+// ─── 초기화 ──────────────────────────────────────────────
+function initSidebarState() {
+  // 저장된 collapsed 상태 복원
+  if (localStorage.getItem(SB_LS_KEY)) {
+    document.body.classList.add('sidebar-collapsed');
+  }
+
+  // ESC → 모바일 드로어 닫기
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeMobileSidebar();
+  });
+}
+
 window.addEventListener('DOMContentLoaded', () => {
+  initSidebarState();
   tryAutoLogin();
 });
