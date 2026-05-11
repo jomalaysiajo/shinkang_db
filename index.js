@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════════════════
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbyyE7v6Fj7YP4OSd3fnRIlP2Xx4x_R99yqrTeiIk_EKXsbOjEO7iOyCuU8v8jJFXEhswQ/exec';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycby6NWoZ1tLoaitWYbEzgJw-Q87PVMQNiomAy5rLDUuNgKsH8aaDZ0t8YCPUzhxPhb02Qw/exec';
 const LS_KEY  = 'sgintech_db_key';
 
 let API_KEY = '';
@@ -4497,116 +4497,220 @@ function openExtQuotPreview(fileId, fileName, mimeType, viewURL, fileURL) {
 
 // ── 연결 관리 모달 ───────────────────────────────────────
 async function openExtQuotLinkModal(fileId, vendorName) {
-  showOverlay();
-  let existingLinks = [];
-  try {
-    // 현재 연결 목록 조회
-    const d = await api({ action: 'getExtQuots', filter: {} });
-    const row = (d.rows||[]).find(r => r['FileID'] === fileId);
-    existingLinks = row ? [] : [];
-  } catch(e) {}
-
-  // Parts + Equipment 목록 로드
-  const parts = CACHE.parts || [];
-  const equip = CACHE.equipment || [];
-
-  hideOverlay();
-
   showModal({
-    title: `🔗 연결 관리 — ${vendorName || fileId}`,
+    title: `🔗 품목 연결 — ${vendorName || fileId}`,
     size:  'lg',
     body:  `
-      <p style="font-size:13px;color:var(--text2);margin-bottom:14px">
-        이 견적서를 Parts 또는 Equipment 품목과 연결하면, 해당 품목 상세에서 원가 참고용 견적서를 바로 확인할 수 있습니다.
+      <p style="font-size:12px;color:var(--text2);margin-bottom:14px">
+        품번 또는 품명을 입력해 검색한 뒤 클릭하여 선택하세요.
+        원가와 환율을 입력하면 원화 원가가 자동 계산됩니다.
       </p>
-      <div class="form-grid-2" style="margin-bottom:14px">
-        <div class="form-group">
-          <label class="form-label">구분</label>
-          <select class="form-select" id="lk-type">
-            <option value="Parts">Parts</option>
-            <option value="Equipment">Equipment</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">품목 선택 <span class="req">*</span></label>
-          <select class="form-select" id="lk-item">
-            <option value="">-- 선택 --</option>
-            ${parts.map(p=>`<option value="${p['PartNo']}" data-type="Parts">P: ${p['PartNo']} — ${p['품명']}</option>`).join('')}
-            ${equip.map(e=>`<option value="${e['EquipNo']}" data-type="Equipment">E: ${e['EquipNo']} — ${e['장비명']}</option>`).join('')}
-          </select>
+
+      <!-- ① 품번 검색 -->
+      <div class="form-group" style="position:relative;margin-bottom:6px">
+        <label class="form-label">품번 / 품명 검색</label>
+        <input class="form-input" id="lk-search" placeholder="예: P-2025-001 또는 모터"
+               oninput="searchLkItems(this.value)" autocomplete="off">
+        <div id="lk-suggest" style="display:none;position:absolute;left:0;right:0;top:100%;
+             background:var(--card-bg);border:1px solid var(--border2);border-top:none;
+             border-radius:0 0 var(--r-sm) var(--r-sm);max-height:200px;overflow-y:auto;
+             z-index:999;box-shadow:var(--shadow)"></div>
+      </div>
+
+      <!-- ② 선택된 품목 표시 -->
+      <div id="lk-selected-wrap" style="display:none;margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;
+             background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--r-sm)">
+          <span id="lk-selected-badge" class="badge badge-blue"></span>
+          <span id="lk-selected-no" style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600"></span>
+          <span id="lk-selected-name" style="font-size:13px;flex:1"></span>
+          <button class="btn btn-danger btn-sm" onclick="clearLkSelected()">✕ 해제</button>
         </div>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="addExtQuotLink('${fileId}')">연결 추가</button>
-      <div id="lk-list" style="margin-top:16px">
-        <div style="font-size:12px;font-weight:600;color:var(--text3);margin-bottom:8px">현재 연결된 품목</div>
-        <div id="lk-items-wrap">
-          <div class="spinner" style="width:20px;height:20px;margin:8px auto"></div>
+
+      <!-- ③ 원가 / 환율 입력 -->
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:14px">
+        <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">원가 정보</div>
+        <div class="form-grid-2">
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">통화</label>
+            <select class="form-select" id="lk-currency" onchange="calcLkCost()">
+              <option value="CNY">CNY — 위안 (¥)</option>
+              <option value="EUR">EUR — 유로 (€)</option>
+              <option value="USD">USD — 달러 ($)</option>
+              <option value="JPY">JPY — 엔 (¥)</option>
+              <option value="KRW">KRW — 원화 (₩)</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">단가 (외화)</label>
+            <input class="form-input" type="number" id="lk-cost-fc" placeholder="0" min="0" step="any" oninput="calcLkCost()">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">환율 (→ KRW)</label>
+            <input class="form-input" type="number" id="lk-rate" placeholder="예: 190.5 (CNY), 1480 (EUR)" min="0" step="any" oninput="calcLkCost()">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">원가 (원화 ₩)</label>
+            <div style="position:relative">
+              <input class="form-input" type="number" id="lk-cost-krw" placeholder="자동 계산"
+                     style="background:var(--bg);font-weight:600;color:var(--accent)"
+                     oninput="syncLkKrw()" step="any">
+              <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10px;color:var(--text3)"
+                    id="lk-calc-hint"></span>
+            </div>
+          </div>
         </div>
+      </div>
+
+      <!-- ④ 연결 추가 버튼 -->
+      <button class="btn btn-primary btn-sm" style="width:100%;margin-bottom:16px"
+              onclick="addExtQuotLink('${fileId}')">연결 추가</button>
+
+      <!-- ⑤ 현재 연결 목록 -->
+      <div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">현재 연결된 품목</div>
+      <div id="lk-items-wrap">
+        <div class="spinner" style="width:18px;height:18px;margin:8px auto"></div>
       </div>`,
     onConfirm: null,
   });
 
-  // 저장 버튼 숨기기 (연결은 즉시 적용)
   setTimeout(() => {
     const btn = document.getElementById('modal-confirm-btn');
     if (btn) btn.style.display = 'none';
+    window._lkSelected = null;
   }, 0);
 
   loadExtQuotLinkList(fileId);
-
-  // Parts/Equipment 탭 필터
-  document.getElementById('lk-type')?.addEventListener('change', function() {
-    const type = this.value;
-    const sel  = document.getElementById('lk-item');
-    if (!sel) return;
-    sel.innerHTML = '<option value="">-- 선택 --</option>';
-    const items = type === 'Parts' ? parts : equip;
-    items.forEach(item => {
-      const no  = type === 'Parts' ? item['PartNo']  : item['EquipNo'];
-      const nm  = type === 'Parts' ? item['품명']    : item['장비명'];
-      sel.innerHTML += `<option value="${no}">${no} — ${nm}</option>`;
-    });
-  });
 }
 
+// ── 품목 검색 ────────────────────────────────────────────
+function searchLkItems(query) {
+  const wrap = document.getElementById('lk-suggest');
+  if (!wrap) return;
+  const q = (query || '').trim().toLowerCase();
+  if (!q) { wrap.style.display = 'none'; return; }
+
+  const results = [
+    ...(CACHE.parts||[]).filter(p =>
+      String(p['PartNo']||'').toLowerCase().includes(q) ||
+      String(p['품명']||'').toLowerCase().includes(q)
+    ).slice(0,8).map(p => ({ type:'Parts', no:p['PartNo'], name:p['품명'], model:p['모델명']||'' })),
+    ...(CACHE.equipment||[]).filter(e =>
+      String(e['EquipNo']||'').toLowerCase().includes(q) ||
+      String(e['장비명']||'').toLowerCase().includes(q)
+    ).slice(0,8).map(e => ({ type:'Equipment', no:e['EquipNo'], name:e['장비명'], model:e['모델명']||'' })),
+  ];
+
+  if (!results.length) {
+    wrap.innerHTML = '<div style="padding:10px 14px;font-size:12px;color:var(--text3)">검색 결과 없음</div>';
+    wrap.style.display = 'block'; return;
+  }
+
+  wrap.innerHTML = results.map(item => `
+    <div onclick="selectLkItem(${JSON.stringify(item).replace(/"/g,'&quot;')})"
+         style="padding:8px 14px;cursor:pointer;border-bottom:1px solid var(--border);
+                display:flex;align-items:center;gap:8px;font-size:13px"
+         onmouseenter="this.style.background='var(--bg)'"
+         onmouseleave="this.style.background=''">
+      <span class="badge ${item.type==='Parts'?'badge-blue':'badge-green'}" style="flex-shrink:0">${item.type==='Parts'?'P':'E'}</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text2);min-width:90px;flex-shrink:0">${item.no}</span>
+      <span style="font-weight:500">${item.name}</span>
+      ${item.model?`<span style="font-size:11px;color:var(--text3)">${item.model}</span>`:''}
+    </div>`).join('');
+  wrap.style.display = 'block';
+}
+
+function selectLkItem(item) {
+  window._lkSelected = item;
+  const suggest = document.getElementById('lk-suggest');
+  const search  = document.getElementById('lk-search');
+  if (suggest) suggest.style.display = 'none';
+  if (search)  search.value = '';
+  document.getElementById('lk-selected-wrap').style.display = 'block';
+  const badge = document.getElementById('lk-selected-badge');
+  badge.textContent = item.type;
+  badge.className   = 'badge ' + (item.type==='Parts'?'badge-blue':'badge-green');
+  document.getElementById('lk-selected-no').textContent   = item.no;
+  document.getElementById('lk-selected-name').textContent = item.name + (item.model?` (${item.model})`:'');
+}
+
+function clearLkSelected() {
+  window._lkSelected = null;
+  document.getElementById('lk-selected-wrap').style.display = 'none';
+  const s = document.getElementById('lk-search');
+  if (s) { s.value = ''; s.focus(); }
+}
+
+// ── 원가 자동 계산 ───────────────────────────────────────
+function calcLkCost() {
+  const fc       = parseFloat(document.getElementById('lk-cost-fc')?.value  || 0);
+  const rate     = parseFloat(document.getElementById('lk-rate')?.value     || 0);
+  const currency = document.getElementById('lk-currency')?.value || '';
+  const krwInput = document.getElementById('lk-cost-krw');
+  const hint     = document.getElementById('lk-calc-hint');
+  if (currency === 'KRW') {
+    if (krwInput) { krwInput.readOnly = false; krwInput.style.background = ''; }
+    if (hint) hint.textContent = '직접 입력';
+    return;
+  }
+  if (krwInput) { krwInput.readOnly = true; krwInput.style.background = 'var(--bg)'; }
+  if (fc > 0 && rate > 0) {
+    if (krwInput) krwInput.value = Math.round(fc * rate);
+    if (hint) hint.textContent = fc.toLocaleString() + '×' + rate;
+  } else {
+    if (krwInput) krwInput.value = '';
+    if (hint) hint.textContent = '';
+  }
+}
+
+function syncLkKrw() {
+  const hint = document.getElementById('lk-calc-hint');
+  if (hint) hint.textContent = '';
+}
+
+// ── 연결 목록 로드 ───────────────────────────────────────
 async function loadExtQuotLinkList(fileId) {
   const wrap = document.getElementById('lk-items-wrap');
   if (!wrap) return;
   try {
     const parts = CACHE.parts     || [];
     const equip = CACHE.equipment || [];
-
-    // 연결된 아이템들 조회 (Parts + Equipment 모두 확인)
-    const [rp, re] = await Promise.all([
-      api({ action: 'getQuotsForItem', itemType: 'Parts',     itemNo: '__ALL__' }).catch(()=>({rows:[]})),
-      api({ action: 'getQuotsForItem', itemType: 'Equipment', itemNo: '__ALL__' }).catch(()=>({rows:[]})),
-    ]);
-    // 위 방법은 비효율적이므로, 직접 getExtQuots linkCount를 활용해 별도 API 호출
-    // 대신 Parts/Equipment 전체에서 이 fileId와 연결된 링크만 조회
-    const linksD = await api({ action: 'getExtQuots', filter: {} });
-    const thisFile = (linksD.rows||[]).find(r => r['FileID'] === fileId);
-
-    // ExtQuotLinks 직접 조회
-    const allLinks = await api({ action: 'getLinksForFile', fileId });
-    const links = allLinks.rows || [];
+    const d     = await api({ action: 'getLinksForFile', fileId });
+    const links = d.rows || [];
 
     if (!links.length) {
       wrap.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:8px 0">연결된 품목이 없습니다</div>';
       return;
     }
 
+    const fmtKrw = v => v ? Number(v).toLocaleString() + ' ₩' : '—';
+    const fmtFc  = (v, cur) => {
+      if (!v) return '—';
+      const sym = {CNY:'¥', EUR:'€', USD:'$', JPY:'¥', KRW:'₩'}[cur] || '';
+      return sym + Number(v).toLocaleString();
+    };
+
     wrap.innerHTML = links.map(l => {
-      const items = l['ItemType'] === 'Parts' ? parts : equip;
-      const item  = items.find(i => (l['ItemType'] === 'Parts' ? i['PartNo'] : i['EquipNo']) === l['ItemNo']);
-      const label = item ? (l['ItemType'] === 'Parts' ? item['품명'] : item['장비명']) : l['ItemNo'];
+      const items = l['ItemType']==='Parts' ? parts : equip;
+      const item  = items.find(i => (l['ItemType']==='Parts'?i['PartNo']:i['EquipNo']) === l['ItemNo']);
+      const label = item ? (l['ItemType']==='Parts'?item['품명']:item['장비명']) : l['ItemNo'];
+      const hasCost = l['원가_원화'] || l['원가_외화'];
       return `
-        <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--bg);
-             border-radius:var(--r-sm);margin-bottom:4px;font-size:13px">
-          <span class="badge ${l['ItemType']==='Parts'?'badge-blue':'badge-green'}">${l['ItemType']}</span>
-          <span class="td-mono" style="font-size:11px">${l['ItemNo']}</span>
-          <span style="flex:1;color:var(--text2)">${label}</span>
-          <button class="btn btn-danger btn-sm"
-            onclick="removeExtQuotLink('${fileId}','${l['ItemType']}','${l['ItemNo']}')">해제</button>
+        <div style="padding:8px 10px;background:var(--bg);border-radius:var(--r-sm);margin-bottom:6px">
+          <div style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:${hasCost?'5px':'0'}">
+            <span class="badge ${l['ItemType']==='Parts'?'badge-blue':'badge-green'}">${l['ItemType']}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px">${l['ItemNo']}</span>
+            <span style="flex:1;color:var(--text2)">${label}</span>
+            <button class="btn btn-danger btn-sm"
+              onclick="removeExtQuotLink('${fileId}','${l['ItemType']}','${l['ItemNo']}')">해제</button>
+          </div>
+          ${hasCost ? `
+          <div style="display:flex;gap:12px;font-size:11px;color:var(--text2);padding-left:4px">
+            <span>외화: <b>${fmtFc(l['원가_외화'],l['통화'])} ${l['통화']||''}</b></span>
+            ${l['환율'] ? `<span>환율: <b>${Number(l['환율']).toLocaleString()}</b></span>` : ''}
+            <span style="color:var(--accent)">원가: <b>${fmtKrw(l['원가_원화'])}</b></span>
+          </div>` : ''}
         </div>`;
     }).join('');
   } catch(e) {
@@ -4615,17 +4719,25 @@ async function loadExtQuotLinkList(fileId) {
 }
 
 async function addExtQuotLink(fileId) {
-  const itemNo = document.getElementById('lk-item')?.value;
-  const type   = document.getElementById('lk-type')?.value;
-  if (!itemNo) { showToast('품목을 선택해 주세요', 'error'); return; }
+  const selected = window._lkSelected;
+  if (!selected) { showToast('품목을 먼저 검색·선택해 주세요', 'error'); return; }
+  const currency = document.getElementById('lk-currency')?.value || '';
+  const costFc   = parseFloat(document.getElementById('lk-cost-fc')?.value  || 0) || '';
+  const rate     = parseFloat(document.getElementById('lk-rate')?.value     || 0) || '';
+  const costKrw  = parseFloat(document.getElementById('lk-cost-krw')?.value || 0) || '';
   try {
-    await api({ action: 'linkQuotItem', fileId, itemType: type, itemNo });
-    showToast('연결이 추가되었습니다');
+    await api({
+      action: 'linkQuotItem', fileId,
+      itemType: selected.type, itemNo: selected.no,
+      costData: { 원가_외화: costFc, 통화: currency, 환율: rate, 원가_원화: costKrw },
+    });
+    showToast(`${selected.no} 연결됨`);
+    clearLkSelected();
+    ['lk-cost-fc','lk-rate','lk-cost-krw'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+    document.getElementById('lk-calc-hint') && (document.getElementById('lk-calc-hint').textContent='');
     loadExtQuotLinkList(fileId);
-    loadExtQuotList(); // 카드 연결 수 갱신
-  } catch(e) {
-    showToast('연결 실패: ' + e.message, 'error');
-  }
+    loadExtQuotList();
+  } catch(e) { showToast('연결 실패: ' + e.message, 'error'); }
 }
 
 async function removeExtQuotLink(fileId, itemType, itemNo) {
@@ -4658,8 +4770,29 @@ async function renderLinkedQuotsSection(itemType, itemNo) {
     if (!rows.length) {
       return `<div style="font-size:12px;color:var(--text3);padding:8px 0">연결된 외부 견적서가 없습니다</div>`;
     }
-    return rows.map(r => `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;
+
+    const fmtKrw = v => v ? '₩' + Number(v).toLocaleString() : null;
+    const fmtFc  = (v, cur) => {
+      if (!v) return null;
+      const sym = {CNY:'¥',EUR:'€',USD:'$',JPY:'¥',KRW:'₩'}[cur] || '';
+      return sym + Number(v).toLocaleString() + (cur&&cur!=='KRW'?' '+cur:'');
+    };
+
+    // 각 파일의 링크 데이터(원가)를 가져오기 위해 ExtQuotLinks도 조회
+    const linksD  = await api({ action: 'getLinksForFile', fileId: '__ALL__' }).catch(()=>({rows:[]}));
+
+    return rows.map(r => {
+      // 이 품목과 이 파일의 링크에서 원가 정보 찾기
+      const link = (linksD.rows||[]).find(l =>
+        String(l['FileID'])===String(r['FileID']) &&
+        String(l['ItemType'])===String(itemType) &&
+        String(l['ItemNo'])===String(itemNo)
+      );
+      const krwStr = link ? fmtKrw(link['원가_원화']) : null;
+      const fcStr  = link ? fmtFc(link['원가_외화'], link['통화']) : null;
+
+      return `
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 10px;
            background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);
            margin-bottom:6px;font-size:12px">
         <span style="font-size:20px;flex-shrink:0">${extQuotFileIcon(r['파일유형'])}</span>
@@ -4667,13 +4800,21 @@ async function renderLinkedQuotsSection(itemType, itemNo) {
           <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                title="${r['파일명']||''}">${r['파일명']||'—'}</div>
           <div style="color:var(--text3)">${r['업체명']||''} ${r['업로드일']?'· '+String(r['업로드일']).substring(0,10):''}</div>
+          ${(fcStr||krwStr) ? `
+          <div style="display:flex;gap:10px;margin-top:3px">
+            ${fcStr  ? `<span style="color:var(--text2)">외화: <b>${fcStr}</b></span>` : ''}
+            ${krwStr ? `<span style="color:var(--accent)">원가: <b>${krwStr}</b></span>` : ''}
+          </div>` : ''}
         </div>
-        <button class="btn btn-secondary btn-sm"
-          onclick="openExtQuotPreview('${r['FileID']}','${(r['파일명']||'').replace(/'/g,"\\'")}','${r['파일유형']||''}','${r['viewURL']||''}','${r['파일URL']||''}')">
-          👁 보기
-        </button>
-        <a class="btn btn-secondary btn-sm" href="${r['파일URL']||'#'}" target="_blank">⬇</a>
-      </div>`).join('');
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <button class="btn btn-secondary btn-sm"
+            onclick="openExtQuotPreview('${r['FileID']}','${(r['파일명']||'').replace(/'/g,"\\'")}','${r['파일유형']||''}','${r['viewURL']||''}','${r['파일URL']||''}')">
+            👁
+          </button>
+          <a class="btn btn-secondary btn-sm" href="${r['파일URL']||'#'}" target="_blank">⬇</a>
+        </div>
+      </div>`;
+    }).join('');
   } catch(e) {
     return `<div style="font-size:12px;color:var(--danger)">로드 실패</div>`;
   }
