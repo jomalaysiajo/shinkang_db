@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════════════════
-const GAS_URL = 'https://script.google.com/macros/s/AKfycby6NWoZ1tLoaitWYbEzgJw-Q87PVMQNiomAy5rLDUuNgKsH8aaDZ0t8YCPUzhxPhb02Qw/exec';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbyyE7v6Fj7YP4OSd3fnRIlP2Xx4x_R99yqrTeiIk_EKXsbOjEO7iOyCuU8v8jJFXEhswQ/exec';
 const LS_KEY  = 'sgintech_db_key';
 
 let API_KEY = '';
