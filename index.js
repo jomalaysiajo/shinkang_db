@@ -280,6 +280,7 @@ const PAGE_META = {
   'list-quotation':    { title: '견적 목록',      sub: '리스트' },
   'list-purchase':     { title: '구매 목록',      sub: '리스트' },
   'list-sales':        { title: '판매 목록',      sub: '리스트' },
+  'ext-quotations':    { title: '외부 견적서',    sub: '파트너사 견적서 파일 관리' },
 };
 
 function navigate(page) {
@@ -332,6 +333,7 @@ function navigate(page) {
     case 'list-quotation':    renderListQuotation(content);   break;
     case 'list-purchase':     renderListPurchase(content);    break;
     case 'list-sales':        renderListSales(content);       break;
+    case 'ext-quotations':    renderExtQuotations(content);   break;
     default: content.innerHTML = '<p class="text-muted">준비 중</p>';
   }
 }
@@ -1309,6 +1311,16 @@ function openPartsModal(data = null) {
             <option value="Y" ${d['사용여부']==='Y'?'selected':''}>사용</option>
             <option value="N" ${d['사용여부']==='N'?'selected':''}>미사용</option>
           </select>
+        <div class="form-group" style="grid-column:1/-1">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <label class="form-label" style="margin:0">📁 연결된 외부 견적서 (원가 참고)</label>
+            <button class="btn btn-secondary btn-sm"
+              onclick="navigate('ext-quotations');closeModal()">견적서 관리</button>
+          </div>
+          <div id="parts-linked-quots">
+            <div class="spinner" style="width:18px;height:18px;margin:8px 0"></div>
+          </div>
+        </div>
         </div>` : ''}
       </div>`,
     onConfirm: async () => {
@@ -1337,6 +1349,14 @@ function openPartsModal(data = null) {
       loadPartsTable();
     }
   });
+  // 수정 모드에서는 연결된 외부 견적서 로드
+  if (isEdit && d['PartNo']) {
+    setTimeout(async () => {
+      const el = document.getElementById('parts-linked-quots');
+      if (!el) return;
+      el.innerHTML = await renderLinkedQuotsSection('Parts', d['PartNo']);
+    }, 100);
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1506,6 +1526,16 @@ function openEquipModal(data = null) {
             <option value="Y" ${d['사용여부']==='Y'?'selected':''}>사용</option>
             <option value="N" ${d['사용여부']==='N'?'selected':''}>미사용</option>
           </select>
+        </div>
+        <div class="form-group" style="grid-column:1/-1">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <label class="form-label" style="margin:0">📁 연결된 외부 견적서 (원가 참고)</label>
+            <button class="btn btn-secondary btn-sm"
+              onclick="navigate('ext-quotations');closeModal()">견적서 관리</button>
+          </div>
+          <div id="equip-linked-quots">
+            <div class="spinner" style="width:18px;height:18px;margin:8px 0"></div>
+          </div>
         </div>` : ''}
       </div>`,
     onConfirm: async () => {
@@ -1534,6 +1564,14 @@ function openEquipModal(data = null) {
       loadEquipTable();
     }
   });
+  // 수정 모드에서는 연결된 외부 견적서 로드
+  if (isEdit && d['EquipNo']) {
+    setTimeout(async () => {
+      const el = document.getElementById('equip-linked-quots');
+      if (!el) return;
+      el.innerHTML = await renderLinkedQuotsSection('Equipment', d['EquipNo']);
+    }, 100);
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -4117,6 +4155,513 @@ function buildDivOpts(target, selected='') {
 // ═══════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// 외부 견적서 관리  (External Quotation File Manager)
+// ═══════════════════════════════════════════════════════
+
+// ── 파일 유형 헬퍼 ───────────────────────────────────────
+function extQuotFileIcon(mimeType) {
+  if (!mimeType) return '📎';
+  if (mimeType.includes('pdf'))   return '📄';
+  if (mimeType.includes('image')) return '🖼️';
+  if (mimeType.includes('sheet') || mimeType.includes('excel') || mimeType.includes('xlsx')) return '📊';
+  if (mimeType.includes('word')  || mimeType.includes('docx'))  return '📝';
+  return '📎';
+}
+
+function extQuotFileTypeBadge(mimeType) {
+  if (!mimeType) return '<span class="badge badge-gray">파일</span>';
+  if (mimeType.includes('pdf'))   return '<span class="badge badge-red">PDF</span>';
+  if (mimeType.includes('image')) return '<span class="badge badge-blue">이미지</span>';
+  if (mimeType.includes('sheet') || mimeType.includes('excel') || mimeType.includes('xlsx'))
+    return '<span class="badge badge-green">Excel</span>';
+  if (mimeType.includes('word')  || mimeType.includes('docx'))
+    return '<span class="badge badge-blue">Word</span>';
+  return '<span class="badge badge-gray">파일</span>';
+}
+
+// ── 페이지 렌더 ──────────────────────────────────────────
+function renderExtQuotations(el) {
+  el.innerHTML = `
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">📁 외부 견적서</div>
+      <button class="btn btn-primary btn-sm" onclick="openExtQuotUploadModal()">＋ 견적서 업로드</button>
+    </div>
+    <div class="search-bar">
+      <div class="search-input-wrap">
+        <span class="search-icon">🔍</span>
+        <input class="search-input" id="eq-search" placeholder="업체명, 프로젝트, 설명 검색...">
+      </div>
+      <select class="form-select" id="eq-vendor" style="width:150px">
+        <option value="">전체 업체</option>
+        ${(CACHE.vendor||[]).map(v=>`<option value="${v['회사명']}">${v['회사명']}</option>`).join('')}
+      </select>
+      <select class="form-select" id="eq-project" style="width:150px">
+        <option value="">전체 프로젝트</option>
+        ${(CACHE.project||[]).map(p=>`<option value="${p['프로젝트명']}">${p['프로젝트명']}</option>`).join('')}
+      </select>
+      <button class="btn btn-secondary btn-sm" onclick="loadExtQuotList()">검색</button>
+    </div>
+    <div id="eq-list">
+      <div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
+    </div>
+  </div>`;
+
+  document.getElementById('eq-search').addEventListener('keydown', e => {
+    if (e.key === 'Enter') loadExtQuotList();
+  });
+  loadExtQuotList();
+}
+
+// ── 목록 로드 ────────────────────────────────────────────
+async function loadExtQuotList() {
+  const el = document.getElementById('eq-list');
+  if (!el) return;
+  el.innerHTML = `<div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>`;
+  try {
+    const filter = {};
+    const kw      = document.getElementById('eq-search')?.value.trim();
+    const vendor  = document.getElementById('eq-vendor')?.value;
+    const project = document.getElementById('eq-project')?.value;
+    if (kw)      filter.keyword = kw;
+    if (vendor)  filter.vendor  = vendor;
+    if (project) filter.project = project;
+
+    const d    = await api({ action: 'getExtQuots', filter });
+    const rows = d.rows || [];
+
+    if (!rows.length) {
+      el.innerHTML = `
+        <div class="table-empty" style="padding:60px">
+          <div style="font-size:40px;margin-bottom:12px">📁</div>
+          <div style="font-weight:600;color:var(--text2);margin-bottom:8px">등록된 견적서가 없습니다</div>
+          <div style="font-size:12px;color:var(--text3);margin-bottom:20px">파트너사로부터 받은 견적서를 업로드하여 관리하세요</div>
+          <button class="btn btn-primary btn-sm" onclick="openExtQuotUploadModal()">＋ 첫 견적서 업로드</button>
+        </div>`;
+      return;
+    }
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;padding:16px">
+        ${rows.map(r => `
+        <div class="eq-card" style="background:var(--card-bg);border:1px solid var(--border);border-radius:var(--r-lg);
+             padding:16px;display:flex;flex-direction:column;gap:10px;transition:box-shadow var(--t-fast);"
+             onmouseenter="this.style.boxShadow='var(--shadow)'" onmouseleave="this.style.boxShadow=''">
+          <div style="display:flex;align-items:flex-start;gap:12px">
+            <div style="font-size:32px;line-height:1;flex-shrink:0">${extQuotFileIcon(r['파일유형'])}</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600;color:var(--text);
+                   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:3px"
+                   title="${r['파일명']||''}">${r['파일명']||'—'}</div>
+              <div style="display:flex;gap:5px;flex-wrap:wrap">
+                ${extQuotFileTypeBadge(r['파일유형'])}
+                ${r['linkCount'] > 0 ? `<span class="badge badge-blue">연결 ${r['linkCount']}건</span>` : ''}
+              </div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px">
+            <div>
+              <div style="color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:.05em">업체</div>
+              <div style="color:var(--text2);font-weight:500">${r['업체명']||'—'}</div>
+            </div>
+            <div>
+              <div style="color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:.05em">프로젝트</div>
+              <div style="color:var(--text2);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                   title="${r['프로젝트명']||''}">${r['프로젝트명']||'—'}</div>
+            </div>
+          </div>
+          ${r['설명'] ? `<div style="font-size:12px;color:var(--text2);border-top:1px solid var(--border);padding-top:8px">
+            ${r['설명']}</div>` : ''}
+          <div style="font-size:11px;color:var(--text3)">${String(r['업로드일']||'').substring(0,10)}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:10px">
+            <button class="btn btn-secondary btn-sm" onclick="openExtQuotPreview('${r['FileID']}','${(r['파일명']||'').replace(/'/g,"\\'")}','${r['파일유형']||''}','${r['viewURL']||''}','${r['파일URL']||''}')">👁 미리보기</button>
+            <a class="btn btn-secondary btn-sm" href="${r['파일URL']||'#'}" target="_blank" download>⬇ 다운로드</a>
+            <button class="btn btn-secondary btn-sm" onclick="openExtQuotLinkModal('${r['FileID']}','${(r['업체명']||'').replace(/'/g,"\\'")}')">🔗 연결</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteExtQuotFile('${r['FileID']}','${(r['파일명']||'').replace(/'/g,"\\'")}')">삭제</button>
+          </div>
+        </div>`).join('')}
+      </div>
+      <div style="padding:8px 16px;font-size:11px;color:var(--text3);border-top:1px solid var(--border)">
+        총 ${rows.length}건
+      </div>`;
+  } catch(e) {
+    if (el) el.innerHTML = '<div class="table-empty">로드 실패</div>';
+    showToast('외부 견적서 로드 실패 — ' + e.message, 'error');
+  }
+}
+
+// ── 업로드 모달 ──────────────────────────────────────────
+function openExtQuotUploadModal() {
+  showModal({
+    title: '외부 견적서 업로드',
+    size:  'lg',
+    body: `
+      <div id="eq-drop-zone" style="border:2px dashed var(--border2);border-radius:var(--r-lg);
+           padding:32px;text-align:center;margin-bottom:16px;transition:all var(--t-fast);cursor:pointer"
+           ondragover="event.preventDefault();this.style.borderColor='var(--accent)';this.style.background='var(--accent-soft)'"
+           ondragleave="this.style.borderColor='var(--border2)';this.style.background=''"
+           ondrop="handleExtQuotDrop(event)"
+           onclick="document.getElementById('eq-file-input').click()">
+        <div style="font-size:36px;margin-bottom:8px">📁</div>
+        <div style="font-weight:600;color:var(--text2);margin-bottom:4px">파일을 드래그하거나 클릭하여 선택</div>
+        <div style="font-size:12px;color:var(--text3)">PDF, 이미지, Excel, Word — 최대 20MB</div>
+        <input type="file" id="eq-file-input" style="display:none"
+               accept=".pdf,.jpg,.jpeg,.png,.gif,.xlsx,.xls,.docx,.doc"
+               onchange="handleExtQuotFileSelect(this.files[0])">
+      </div>
+      <div id="eq-file-info" style="display:none;background:var(--bg);border:1px solid var(--border);
+           border-radius:var(--r);padding:10px 14px;margin-bottom:14px;font-size:13px;
+           display:none;align-items:center;gap:10px">
+        <span id="eq-file-icon" style="font-size:24px"></span>
+        <div style="flex:1;min-width:0">
+          <div id="eq-file-name" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
+          <div id="eq-file-size" style="font-size:11px;color:var(--text3)"></div>
+        </div>
+        <button class="btn btn-danger btn-sm" onclick="clearExtQuotFile()">✕</button>
+      </div>
+      <div class="form-grid-2">
+        <div class="form-group">
+          <label class="form-label">업체명 <span class="req">*</span></label>
+          <select class="form-select" id="eq-vendor-sel">
+            <option value="">-- 선택 또는 직접 입력 --</option>
+            ${(CACHE.vendor||[]).map(v=>`<option value="${v['회사명']}">${v['회사명']}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">업체명 직접 입력</label>
+          <input class="form-input" id="eq-vendor-txt" placeholder="목록에 없으면 직접 입력">
+        </div>
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">프로젝트</label>
+          <select class="form-select" id="eq-proj-sel">
+            <option value="">-- 선택 --</option>
+            ${(CACHE.project||[]).map(p=>`<option value="${p['프로젝트명']}">${p['프로젝트명']}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">설명</label>
+          <input class="form-input" id="eq-desc" placeholder="예: 2025년 4분기 Shuttle 부품 견적">
+        </div>
+        <div class="form-group" style="grid-column:1/-1">
+          <label class="form-label">비고</label>
+          <input class="form-input" id="eq-note" placeholder="추가 메모">
+        </div>
+      </div>
+      <div id="eq-progress" style="display:none;margin-top:8px">
+        <div style="font-size:12px;color:var(--text2);margin-bottom:6px" id="eq-progress-msg">업로드 중...</div>
+        <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+          <div id="eq-progress-bar" style="height:100%;background:var(--accent);width:0%;transition:width .3s;border-radius:3px"></div>
+        </div>
+      </div>`,
+    onConfirm: async () => {
+      const file = window._eqUploadFile;
+      const vendor = document.getElementById('eq-vendor-txt').value.trim()
+                  || document.getElementById('eq-vendor-sel').value;
+      if (!file)   { showToast('파일을 선택해 주세요', 'error'); return false; }
+      if (!vendor) { showToast('업체명을 입력해 주세요', 'error'); return false; }
+
+      // 진행 표시
+      document.getElementById('eq-progress').style.display = 'block';
+      const pBar = document.getElementById('eq-progress-bar');
+      const pMsg = document.getElementById('eq-progress-msg');
+      pMsg.textContent = '파일 읽는 중...';
+      pBar.style.width = '20%';
+
+      try {
+        const base64 = await fileToBase64(file);
+        pMsg.textContent = '서버에 업로드 중...'; pBar.style.width = '60%';
+
+        await api({
+          action:      'uploadExtQuot',
+          fileName:    file.name,
+          fileData:    base64,
+          mimeType:    file.type,
+          vendor,
+          project:     document.getElementById('eq-proj-sel').value,
+          description: document.getElementById('eq-desc').value.trim(),
+          note:        document.getElementById('eq-note').value.trim(),
+        });
+
+        pBar.style.width = '100%';
+        window._eqUploadFile = null;
+        showToast('견적서가 업로드되었습니다', 'success');
+        loadExtQuotList();
+      } catch(e) {
+        showToast('업로드 실패: ' + e.message, 'error');
+        return false;
+      }
+    },
+  });
+}
+
+// ── 파일 선택/드롭 핸들러 ───────────────────────────────
+function handleExtQuotDrop(e) {
+  e.preventDefault();
+  const dz = document.getElementById('eq-drop-zone');
+  if (dz) { dz.style.borderColor = ''; dz.style.background = ''; }
+  const file = e.dataTransfer?.files?.[0];
+  if (file) handleExtQuotFileSelect(file);
+}
+
+function handleExtQuotFileSelect(file) {
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) {
+    showToast('파일 크기가 20MB를 초과합니다', 'error'); return;
+  }
+  window._eqUploadFile = file;
+  const info = document.getElementById('eq-file-info');
+  if (info) {
+    info.style.display = 'flex';
+    document.getElementById('eq-file-icon').textContent  = extQuotFileIcon(file.type);
+    document.getElementById('eq-file-name').textContent  = file.name;
+    document.getElementById('eq-file-size').textContent  =
+      (file.size / 1024 / 1024).toFixed(2) + ' MB';
+    document.getElementById('eq-drop-zone').style.display = 'none';
+  }
+}
+
+function clearExtQuotFile() {
+  window._eqUploadFile = null;
+  const info = document.getElementById('eq-file-info');
+  const dz   = document.getElementById('eq-drop-zone');
+  if (info) info.style.display = 'none';
+  if (dz)   dz.style.display   = 'block';
+  const fi = document.getElementById('eq-file-input');
+  if (fi) fi.value = '';
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = () => reject(new Error('파일 읽기 실패'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// ── 미리보기 모달 ────────────────────────────────────────
+function openExtQuotPreview(fileId, fileName, mimeType, viewURL, fileURL) {
+  if (!viewURL && !fileURL) { showToast('미리보기 URL이 없습니다', 'error'); return; }
+
+  const isImage = mimeType && mimeType.includes('image');
+  const isPDF   = mimeType && mimeType.includes('pdf');
+
+  // 이미지는 모달에서, PDF/문서는 새 탭에서 Google Drive 뷰어로
+  if (!isImage) {
+    window.open(viewURL || fileURL, '_blank');
+    return;
+  }
+
+  showModal({
+    title: '미리보기 — ' + (fileName || '파일'),
+    size:  'lg',
+    body:  `
+      <div style="text-align:center">
+        <img src="${fileURL}" alt="${fileName}"
+             style="max-width:100%;max-height:70vh;border-radius:var(--r);box-shadow:var(--shadow)"
+             onerror="this.src='';this.alt='이미지를 불러올 수 없습니다'">
+      </div>
+      <div style="margin-top:12px;text-align:center">
+        <a class="btn btn-primary btn-sm" href="${fileURL}" target="_blank" download="${fileName}">
+          ⬇ 다운로드
+        </a>
+      </div>`,
+    onConfirm: null,
+  });
+  // 저장 버튼 숨기기
+  setTimeout(() => {
+    const btn = document.getElementById('modal-confirm-btn');
+    if (btn) btn.style.display = 'none';
+  }, 0);
+}
+
+// ── 연결 관리 모달 ───────────────────────────────────────
+async function openExtQuotLinkModal(fileId, vendorName) {
+  showOverlay();
+  let existingLinks = [];
+  try {
+    // 현재 연결 목록 조회
+    const d = await api({ action: 'getExtQuots', filter: {} });
+    const row = (d.rows||[]).find(r => r['FileID'] === fileId);
+    existingLinks = row ? [] : [];
+  } catch(e) {}
+
+  // Parts + Equipment 목록 로드
+  const parts = CACHE.parts || [];
+  const equip = CACHE.equipment || [];
+
+  hideOverlay();
+
+  showModal({
+    title: `🔗 연결 관리 — ${vendorName || fileId}`,
+    size:  'lg',
+    body:  `
+      <p style="font-size:13px;color:var(--text2);margin-bottom:14px">
+        이 견적서를 Parts 또는 Equipment 품목과 연결하면, 해당 품목 상세에서 원가 참고용 견적서를 바로 확인할 수 있습니다.
+      </p>
+      <div class="form-grid-2" style="margin-bottom:14px">
+        <div class="form-group">
+          <label class="form-label">구분</label>
+          <select class="form-select" id="lk-type">
+            <option value="Parts">Parts</option>
+            <option value="Equipment">Equipment</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">품목 선택 <span class="req">*</span></label>
+          <select class="form-select" id="lk-item">
+            <option value="">-- 선택 --</option>
+            ${parts.map(p=>`<option value="${p['PartNo']}" data-type="Parts">P: ${p['PartNo']} — ${p['품명']}</option>`).join('')}
+            ${equip.map(e=>`<option value="${e['EquipNo']}" data-type="Equipment">E: ${e['EquipNo']} — ${e['장비명']}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="addExtQuotLink('${fileId}')">연결 추가</button>
+      <div id="lk-list" style="margin-top:16px">
+        <div style="font-size:12px;font-weight:600;color:var(--text3);margin-bottom:8px">현재 연결된 품목</div>
+        <div id="lk-items-wrap">
+          <div class="spinner" style="width:20px;height:20px;margin:8px auto"></div>
+        </div>
+      </div>`,
+    onConfirm: null,
+  });
+
+  // 저장 버튼 숨기기 (연결은 즉시 적용)
+  setTimeout(() => {
+    const btn = document.getElementById('modal-confirm-btn');
+    if (btn) btn.style.display = 'none';
+  }, 0);
+
+  loadExtQuotLinkList(fileId);
+
+  // Parts/Equipment 탭 필터
+  document.getElementById('lk-type')?.addEventListener('change', function() {
+    const type = this.value;
+    const sel  = document.getElementById('lk-item');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">-- 선택 --</option>';
+    const items = type === 'Parts' ? parts : equip;
+    items.forEach(item => {
+      const no  = type === 'Parts' ? item['PartNo']  : item['EquipNo'];
+      const nm  = type === 'Parts' ? item['품명']    : item['장비명'];
+      sel.innerHTML += `<option value="${no}">${no} — ${nm}</option>`;
+    });
+  });
+}
+
+async function loadExtQuotLinkList(fileId) {
+  const wrap = document.getElementById('lk-items-wrap');
+  if (!wrap) return;
+  try {
+    const parts = CACHE.parts     || [];
+    const equip = CACHE.equipment || [];
+
+    // 연결된 아이템들 조회 (Parts + Equipment 모두 확인)
+    const [rp, re] = await Promise.all([
+      api({ action: 'getQuotsForItem', itemType: 'Parts',     itemNo: '__ALL__' }).catch(()=>({rows:[]})),
+      api({ action: 'getQuotsForItem', itemType: 'Equipment', itemNo: '__ALL__' }).catch(()=>({rows:[]})),
+    ]);
+    // 위 방법은 비효율적이므로, 직접 getExtQuots linkCount를 활용해 별도 API 호출
+    // 대신 Parts/Equipment 전체에서 이 fileId와 연결된 링크만 조회
+    const linksD = await api({ action: 'getExtQuots', filter: {} });
+    const thisFile = (linksD.rows||[]).find(r => r['FileID'] === fileId);
+
+    // ExtQuotLinks 직접 조회
+    const allLinks = await api({ action: 'getLinksForFile', fileId });
+    const links = allLinks.rows || [];
+
+    if (!links.length) {
+      wrap.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:8px 0">연결된 품목이 없습니다</div>';
+      return;
+    }
+
+    wrap.innerHTML = links.map(l => {
+      const items = l['ItemType'] === 'Parts' ? parts : equip;
+      const item  = items.find(i => (l['ItemType'] === 'Parts' ? i['PartNo'] : i['EquipNo']) === l['ItemNo']);
+      const label = item ? (l['ItemType'] === 'Parts' ? item['품명'] : item['장비명']) : l['ItemNo'];
+      return `
+        <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--bg);
+             border-radius:var(--r-sm);margin-bottom:4px;font-size:13px">
+          <span class="badge ${l['ItemType']==='Parts'?'badge-blue':'badge-green'}">${l['ItemType']}</span>
+          <span class="td-mono" style="font-size:11px">${l['ItemNo']}</span>
+          <span style="flex:1;color:var(--text2)">${label}</span>
+          <button class="btn btn-danger btn-sm"
+            onclick="removeExtQuotLink('${fileId}','${l['ItemType']}','${l['ItemNo']}')">해제</button>
+        </div>`;
+    }).join('');
+  } catch(e) {
+    wrap.innerHTML = '<div style="font-size:12px;color:var(--danger)">로드 실패: ' + e.message + '</div>';
+  }
+}
+
+async function addExtQuotLink(fileId) {
+  const itemNo = document.getElementById('lk-item')?.value;
+  const type   = document.getElementById('lk-type')?.value;
+  if (!itemNo) { showToast('품목을 선택해 주세요', 'error'); return; }
+  try {
+    await api({ action: 'linkQuotItem', fileId, itemType: type, itemNo });
+    showToast('연결이 추가되었습니다');
+    loadExtQuotLinkList(fileId);
+    loadExtQuotList(); // 카드 연결 수 갱신
+  } catch(e) {
+    showToast('연결 실패: ' + e.message, 'error');
+  }
+}
+
+async function removeExtQuotLink(fileId, itemType, itemNo) {
+  try {
+    await api({ action: 'unlinkQuotItem', fileId, itemType, itemNo });
+    showToast('연결이 해제되었습니다');
+    loadExtQuotLinkList(fileId);
+    loadExtQuotList();
+  } catch(e) {
+    showToast('해제 실패: ' + e.message, 'error');
+  }
+}
+
+async function deleteExtQuotFile(fileId, fileName) {
+  if (!confirm(`"${fileName}"을(를) 삭제하시겠습니까?\nDrive에서도 삭제되며 되돌릴 수 없습니다.`)) return;
+  try {
+    await api({ action: 'deleteExtQuot', fileId });
+    showToast('삭제되었습니다');
+    loadExtQuotList();
+  } catch(e) {
+    showToast('삭제 실패: ' + e.message, 'error');
+  }
+}
+
+// ── Parts/Equipment 모달에서 연결 견적서 섹션 렌더 ───────
+async function renderLinkedQuotsSection(itemType, itemNo) {
+  try {
+    const d    = await api({ action: 'getQuotsForItem', itemType, itemNo });
+    const rows = d.rows || [];
+    if (!rows.length) {
+      return `<div style="font-size:12px;color:var(--text3);padding:8px 0">연결된 외부 견적서가 없습니다</div>`;
+    }
+    return rows.map(r => `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;
+           background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);
+           margin-bottom:6px;font-size:12px">
+        <span style="font-size:20px;flex-shrink:0">${extQuotFileIcon(r['파일유형'])}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+               title="${r['파일명']||''}">${r['파일명']||'—'}</div>
+          <div style="color:var(--text3)">${r['업체명']||''} ${r['업로드일']?'· '+String(r['업로드일']).substring(0,10):''}</div>
+        </div>
+        <button class="btn btn-secondary btn-sm"
+          onclick="openExtQuotPreview('${r['FileID']}','${(r['파일명']||'').replace(/'/g,"\\'")}','${r['파일유형']||''}','${r['viewURL']||''}','${r['파일URL']||''}')">
+          👁 보기
+        </button>
+        <a class="btn btn-secondary btn-sm" href="${r['파일URL']||'#'}" target="_blank">⬇</a>
+      </div>`).join('');
+  } catch(e) {
+    return `<div style="font-size:12px;color:var(--danger)">로드 실패</div>`;
+  }
+}
+
+// ── GAS: getLinksForFile 액션 추가 필요 (gas_db.js 참조) ─
+
 // ═══════════════════════════════════════════════════════
 // SIDEBAR — 데스크톱 Rail 토글 + 모바일 드로어
 // ═══════════════════════════════════════════════════════
