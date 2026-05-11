@@ -4229,6 +4229,14 @@ async function loadExtQuotList() {
     if (project) filter.project = project;
 
     const d    = await api({ action: 'getExtQuots', filter });
+
+    // ok:false 명시적 체크 (GAS 미배포 시 "Unknown action" 포함)
+    if (!d.ok) {
+      const hint = (d.error || '').includes('Unknown action')
+        ? ' (gas_db.js 재배포 필요)' : '';
+      throw new Error((d.error || 'GAS 오류') + hint);
+    }
+
     const rows = d.rows || [];
 
     if (!rows.length) {
@@ -4372,7 +4380,7 @@ function openExtQuotUploadModal() {
         const base64 = await fileToBase64(file);
         pMsg.textContent = '서버에 업로드 중...'; pBar.style.width = '60%';
 
-        await api({
+        const result = await api({
           action:      'uploadExtQuot',
           fileName:    file.name,
           fileData:    base64,
@@ -4383,12 +4391,23 @@ function openExtQuotUploadModal() {
           note:        document.getElementById('eq-note').value.trim(),
         });
 
+        // ok:false는 api()가 throw하지 않으므로 여기서 명시적으로 체크
+        if (!result.ok) {
+          throw new Error(result.error || 'GAS 서버 오류');
+        }
+
         pBar.style.width = '100%';
         window._eqUploadFile = null;
         showToast('견적서가 업로드되었습니다', 'success');
         loadExtQuotList();
       } catch(e) {
-        showToast('업로드 실패: ' + e.message, 'error');
+        document.getElementById('eq-progress').style.display = 'none';
+        const msg = e.message || '';
+        // GAS 재배포 안 됐을 때 안내
+        const hint = msg.includes('Unknown action')
+          ? '\n→ gas_db.js를 새 버전으로 재배포해 주세요.'
+          : '';
+        showToast('업로드 실패: ' + msg + hint, 'error', 6000);
         return false;
       }
     },
@@ -4661,6 +4680,26 @@ async function renderLinkedQuotsSection(itemType, itemNo) {
 }
 
 // ── GAS: getLinksForFile 액션 추가 필요 (gas_db.js 참조) ─
+
+// ═══════════════════════════════════════════════════════
+// 개발 진단 — 브라우저 콘솔에서 diagExtQuot() 호출
+// ═══════════════════════════════════════════════════════
+window.diagExtQuot = async function() {
+  console.group('🔍 외부 견적서 GAS 진단');
+  const tests = [
+    { label: 'getExtQuots 액션',  body: { action: 'getExtQuots',  filter: {} } },
+    { label: 'uploadExtQuot 액션 (파일 없이 오류 확인)', body: { action: 'uploadExtQuot', fileName: '' } },
+  ];
+  for (const t of tests) {
+    try {
+      const r = await api(t.body);
+      console.log(`✅ ${t.label}:`, r);
+    } catch(e) {
+      console.warn(`❌ ${t.label}:`, e.message);
+    }
+  }
+  console.groupEnd();
+};
 
 // ═══════════════════════════════════════════════════════
 // SIDEBAR — 데스크톱 Rail 토글 + 모바일 드로어
