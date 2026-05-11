@@ -1228,7 +1228,7 @@ function renderPartsRows(rows) {
         <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
           ${r['최근원가']
             ? `<span style="color:var(--accent);font-weight:600">₩${Number(r['최근원가']).toLocaleString()}</span>
-               ${r['최근원가일'] ? `<br><span style="font-size:10px;color:var(--text3)">${r['최근원가일']}</span>` : ''}`
+               ${r['최근원가일자'] ? `<br><span style="font-size:10px;color:var(--text3)">${r['최근원가일자']}</span>` : ''}`
             : '<span style="color:var(--text3)">—</span>'}
         </td>
         <td>${r['카테고리'] ? `<span class="badge badge-blue">${r['카테고리']}</span>` : ''}</td>
@@ -1448,7 +1448,7 @@ function renderEquipRows(rows) {
         <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
           ${r['최근원가']
             ? `<span style="color:var(--accent);font-weight:600">₩${Number(r['최근원가']).toLocaleString()}</span>
-               ${r['최근원가일'] ? `<br><span style="font-size:10px;color:var(--text3)">${r['최근원가일']}</span>` : ''}`
+               ${r['최근원가일자'] ? `<br><span style="font-size:10px;color:var(--text3)">${r['최근원가일자']}</span>` : ''}`
             : '<span style="color:var(--text3)">—</span>'}
         </td>
         <td>${badgeYN(r['사용여부'])}</td>
@@ -4547,6 +4547,12 @@ async function openExtQuotLinkModal(fileId, vendorName) {
         <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">원가 정보</div>
         <div class="form-grid-2">
           <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">견적일자 <span style="color:var(--danger)">*</span></label>
+            <input class="form-input" type="date" id="lk-date"
+                   value="${new Date().toISOString().slice(0,10)}"
+                   style="font-family:inherit">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
             <label class="form-label">통화</label>
             <select class="form-select" id="lk-currency" onchange="calcLkCost()">
               <option value="CNY">CNY — 위안 (¥)</option>
@@ -4564,13 +4570,13 @@ async function openExtQuotLinkModal(fileId, vendorName) {
             <label class="form-label">환율 (→ KRW)</label>
             <input class="form-input" type="number" id="lk-rate" placeholder="예: 190.5 (CNY), 1480 (EUR)" min="0" step="any" oninput="calcLkCost()">
           </div>
-          <div class="form-group" style="margin-bottom:0">
+          <div class="form-group" style="margin-bottom:0;grid-column:1/-1">
             <label class="form-label">원가 (원화 ₩)</label>
             <div style="position:relative">
               <input class="form-input" type="number" id="lk-cost-krw" placeholder="자동 계산"
                      style="background:var(--bg);font-weight:600;color:var(--accent)"
                      oninput="syncLkKrw()" step="any">
-              <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10px;color:var(--text3)"
+              <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:10px;color:var(--text3)"
                     id="lk-calc-hint"></span>
             </div>
           </div>
@@ -4720,7 +4726,8 @@ async function loadExtQuotLinkList(fileId) {
               onclick="removeExtQuotLink('${fileId}','${l['ItemType']}','${l['ItemNo']}')">해제</button>
           </div>
           ${hasCost ? `
-          <div style="display:flex;gap:12px;font-size:11px;color:var(--text2);padding-left:4px">
+          <div style="display:flex;gap:12px;font-size:11px;color:var(--text2);padding-left:4px;flex-wrap:wrap">
+            ${l['견적일자'] ? `<span>📅 견적일: <b>${l['견적일자']}</b></span>` : ''}
             <span>외화: <b>${fmtFc(l['원가_외화'],l['통화'])} ${l['통화']||''}</b></span>
             ${l['환율'] ? `<span>환율: <b>${Number(l['환율']).toLocaleString()}</b></span>` : ''}
             <span style="color:var(--accent)">원가: <b>${fmtKrw(l['원가_원화'])}</b></span>
@@ -4735,6 +4742,7 @@ async function loadExtQuotLinkList(fileId) {
 async function addExtQuotLink(fileId) {
   const selected = window._lkSelected;
   if (!selected) { showToast('품목을 먼저 검색·선택해 주세요', 'error'); return; }
+  const date     = document.getElementById('lk-date')?.value     || '';
   const currency = document.getElementById('lk-currency')?.value || '';
   const costFc   = parseFloat(document.getElementById('lk-cost-fc')?.value  || 0) || '';
   const rate     = parseFloat(document.getElementById('lk-rate')?.value     || 0) || '';
@@ -4743,11 +4751,14 @@ async function addExtQuotLink(fileId) {
     await api({
       action: 'linkQuotItem', fileId,
       itemType: selected.type, itemNo: selected.no,
-      costData: { 원가_외화: costFc, 통화: currency, 환율: rate, 원가_원화: costKrw },
+      costData: { 원가_외화: costFc, 통화: currency, 환율: rate, 원가_원화: costKrw, 견적일자: date },
     });
     showToast(`${selected.no} 연결됨`);
     clearLkSelected();
     ['lk-cost-fc','lk-rate','lk-cost-krw'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+    // 날짜는 오늘로 리셋
+    const dateEl = document.getElementById('lk-date');
+    if (dateEl) dateEl.value = new Date().toISOString().slice(0,10);
     document.getElementById('lk-calc-hint') && (document.getElementById('lk-calc-hint').textContent='');
     loadExtQuotLinkList(fileId);
     loadExtQuotList();
