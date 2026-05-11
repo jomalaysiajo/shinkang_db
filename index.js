@@ -1209,7 +1209,8 @@ function renderPartsRows(rows) {
   <div class="table-wrap"><table>
     <thead><tr>
       <th>Part No.</th><th>품명</th><th>모델명</th><th>제조사</th>
-      <th>공급사</th><th>단위</th><th>표준단가</th><th>통화</th><th>카테고리</th><th>상태</th><th></th>
+      <th>공급사</th><th>단위</th><th>표준단가</th><th>통화</th>
+      <th style="text-align:right">원가(₩)</th><th>카테고리</th><th>상태</th><th></th>
     </tr></thead>
     <tbody>
       ${pg.rows.map(r => `
@@ -1220,10 +1221,16 @@ function renderPartsRows(rows) {
         <td class="td-muted">${r['제조사']||''}</td>
         <td class="td-muted">${r['공급사명']||''}</td>
         <td class="td-muted">${r['단위']||''}</td>
-        <td style="text-align:right; font-family:'JetBrains Mono',monospace; font-size:12px">
+        <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
           ${r['표준단가'] ? Number(r['표준단가']).toLocaleString() : '—'}
         </td>
         <td class="td-muted">${r['통화']||''}</td>
+        <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
+          ${r['최근원가']
+            ? `<span style="color:var(--accent);font-weight:600">₩${Number(r['최근원가']).toLocaleString()}</span>
+               ${r['최근원가일'] ? `<br><span style="font-size:10px;color:var(--text3)">${r['최근원가일']}</span>` : ''}`
+            : '<span style="color:var(--text3)">—</span>'}
+        </td>
         <td>${r['카테고리'] ? `<span class="badge badge-blue">${r['카테고리']}</span>` : ''}</td>
         <td>${badgeYN(r['사용여부'])}</td>
         <td>
@@ -1422,7 +1429,8 @@ function renderEquipRows(rows) {
   <div class="table-wrap"><table>
     <thead><tr>
       <th>Equip No.</th><th>장비명</th><th>모델명</th><th>제조사</th>
-      <th>공급사</th><th>용도/위치</th><th>표준단가</th><th>통화</th><th>상태</th><th></th>
+      <th>공급사</th><th>용도/위치</th><th>표준단가</th><th>통화</th>
+      <th style="text-align:right">원가(₩)</th><th>상태</th><th></th>
     </tr></thead>
     <tbody>
       ${pg.rows.map(r => `
@@ -1433,10 +1441,16 @@ function renderEquipRows(rows) {
         <td class="td-muted">${r['제조사']||''}</td>
         <td class="td-muted">${r['공급사명']||''}</td>
         <td class="td-muted text-sm">${r['용도설치위치']||''}</td>
-        <td style="text-align:right; font-family:'JetBrains Mono',monospace; font-size:12px">
+        <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
           ${r['표준단가'] ? Number(r['표준단가']).toLocaleString() : '—'}
         </td>
         <td class="td-muted">${r['통화']||''}</td>
+        <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
+          ${r['최근원가']
+            ? `<span style="color:var(--accent);font-weight:600">₩${Number(r['최근원가']).toLocaleString()}</span>
+               ${r['최근원가일'] ? `<br><span style="font-size:10px;color:var(--text3)">${r['최근원가일']}</span>` : ''}`
+            : '<span style="color:var(--text3)">—</span>'}
+        </td>
         <td>${badgeYN(r['사용여부'])}</td>
         <td>
           <div class="flex gap-2">
