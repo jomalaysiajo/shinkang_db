@@ -386,7 +386,12 @@ function navigate(page) {
   if (cached) {
     content.innerHTML = '';
     content.appendChild(cached);
-    return; // 즉시 표시 — API 호출 없음
+    // 캐시된 페이지에 스피너가 남아있으면 로딩 미완료 상태 → 재렌더
+    if (cached.querySelector('.spinner')) {
+      pcDel(page);
+      setTimeout(() => navigate(page), 0);
+    }
+    return;
   }
 
   // ── 최초 렌더: wrapper div에 렌더 후 캐시 등록 ──────────
