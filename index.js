@@ -222,42 +222,114 @@ async function tryAutoLogin() {
 
 // 캐시 키별 API 요청 정의
 const CACHE_DEFS = {
-  staff:     { req: () => api({ action:'getSettings', sheet:'Settings_Staff'     }), filter: r => r['사용여부']==='Y' },
-  vendor:    { req: () => api({ action:'getSettings', sheet:'Settings_Vendor'    }), filter: r => r['사용여부']==='Y' },
-  project:   { req: () => api({ action:'getSettings', sheet:'Settings_Project'   }), filter: r => r['상태']!=='완료'  },
-  currency:  { req: () => api({ action:'getSettings', sheet:'Settings_Currency'  }), filter: r => r['사용여부']==='Y' },
-  unit:      { req: () => api({ action:'getSettings', sheet:'Settings_Unit'      }), filter: r => r['사용여부']==='Y' },
-  category:  { req: () => api({ action:'getSettings', sheet:'Settings_Category'  }), filter: r => r['사용여부']==='Y' },
-  division:  { req: () => api({ action:'getSettings', sheet:'Settings_Division'  }), filter: r => r['사용여부']==='Y' },
-  parts:     { req: () => api({ action:'getParts'     }), filter: r => r['사용여부']==='Y' },
-  equipment: { req: () => api({ action:'getEquipment' }), filter: r => r['사용여부']==='Y' },
+  staff:     { req: () => api({ action:'getSettings', sheet:'Settings_Staff'     }), filter: r => r['사용여부']==='Y', action:'getSettings', sheet:'Settings_Staff'     },
+  vendor:    { req: () => api({ action:'getSettings', sheet:'Settings_Vendor'    }), filter: r => r['사용여부']==='Y', action:'getSettings', sheet:'Settings_Vendor'    },
+  project:   { req: () => api({ action:'getSettings', sheet:'Settings_Project'   }), filter: r => r['상태']!=='완료',  action:'getSettings', sheet:'Settings_Project'   },
+  currency:  { req: () => api({ action:'getSettings', sheet:'Settings_Currency'  }), filter: r => r['사용여부']==='Y', action:'getSettings', sheet:'Settings_Currency'  },
+  unit:      { req: () => api({ action:'getSettings', sheet:'Settings_Unit'      }), filter: r => r['사용여부']==='Y', action:'getSettings', sheet:'Settings_Unit'      },
+  category:  { req: () => api({ action:'getSettings', sheet:'Settings_Category'  }), filter: r => r['사용여부']==='Y', action:'getSettings', sheet:'Settings_Category'  },
+  division:  { req: () => api({ action:'getSettings', sheet:'Settings_Division'  }), filter: r => r['사용여부']==='Y', action:'getSettings', sheet:'Settings_Division'  },
+  parts:     { req: () => api({ action:'getParts'     }), filter: r => r['사용여부']==='Y', action:'getParts'     },
+  equipment: { req: () => api({ action:'getEquipment' }), filter: r => r['사용여부']==='Y', action:'getEquipment' },
 };
 
-// keys 생략 시 전체 로드, 배열 전달 시 해당 키만 갱신
+// ── fetchCache: getBatch로 9→1 호출 최적화 ───────────────
 async function fetchCache(keys) {
   const targets = keys
     ? (Array.isArray(keys) ? keys : [keys])
     : Object.keys(CACHE_DEFS);
 
-  try {
-    const results = await Promise.all(
-      targets.map(k => CACHE_DEFS[k]?.req())
-    );
-    targets.forEach((k, i) => {
+  // 단일 키 갱신(refreshCache)은 기존 개별 호출 유지 (빠름)
+  if (targets.length === 1) {
+    try {
+      const k   = targets[0];
       const def = CACHE_DEFS[k];
-      if (!def || !results[i]) return;
-      CACHE[k] = (results[i].rows || []).filter(def.filter);
+      if (!def) return;
+      const d = await def.req();
+      if (d?.rows) CACHE[k] = d.rows.filter(def.filter);
+      if (k === 'division') updateTypeDatelist();
+    } catch(e) {
+      console.warn('[fetchCache] 실패:', e.message);
+    }
+    return;
+  }
+
+  // 전체 로드는 getBatch로 1번만 호출
+  try {
+    const items = targets.map(k => {
+      const def = CACHE_DEFS[k];
+      return { key: k, action: def.action, sheet: def.sheet };
     });
+    const d = await api({ action: 'getBatch', items });
+    if (d.ok && d.results) {
+      targets.forEach(k => {
+        const res = d.results[k];
+        const def = CACHE_DEFS[k];
+        if (res?.ok && def) CACHE[k] = (res.rows || []).filter(def.filter);
+      });
+    }
     if (!keys || keys.includes('division')) updateTypeDatelist();
   } catch(e) {
-    console.warn('[fetchCache] 일부 캐시 로드 실패:', e.message);
-    showToast('설정 데이터 로드 실패 — ' + e.message, 'error');
+    console.warn('[fetchCache] getBatch 실패, 개별 호출로 대체:', e.message);
+    // 폴백: 기존 병렬 호출
+    try {
+      const results = await Promise.all(targets.map(k => CACHE_DEFS[k]?.req()));
+      targets.forEach((k, i) => {
+        const def = CACHE_DEFS[k];
+        if (def && results[i]?.rows) CACHE[k] = results[i].rows.filter(def.filter);
+      });
+      if (!keys || keys.includes('division')) updateTypeDatelist();
+    } catch(e2) {
+      showToast('설정 데이터 로드 실패 — ' + e2.message, 'error');
+    }
   }
 }
 
-// 하위 호환 래퍼
 const loadCache    = ()     => fetchCache(null);
 const refreshCache = (type) => fetchCache(type ? [type] : null);
+
+// ════════════════════════════════════════════════════════
+// PAGE CACHE  —  DOM 노드 재사용으로 재방문 즉시 표시
+// ════════════════════════════════════════════════════════
+const PAGE_TTL = {
+  'dashboard':          2 * 60 * 1000,   // 2분
+  'master-parts':      10 * 60 * 1000,   // 10분
+  'master-equipment':  10 * 60 * 1000,
+  'list-quotation':     5 * 60 * 1000,
+  'list-purchase':      5 * 60 * 1000,
+  'list-sales':         5 * 60 * 1000,
+  'ext-quotations':     5 * 60 * 1000,
+  'settings-staff':    15 * 60 * 1000,
+  'settings-vendor':   15 * 60 * 1000,
+  'settings-project':  15 * 60 * 1000,
+  'settings-currency': 15 * 60 * 1000,
+  'settings-unit':     15 * 60 * 1000,
+  'settings-category': 15 * 60 * 1000,
+  'settings-division': 15 * 60 * 1000,
+  'settings-codes':    15 * 60 * 1000,
+  // reg-* 는 항목 없음 → 항상 새로 렌더
+};
+
+const _pageNodes = new Map(); // page → { node: HTMLElement, ts: number }
+
+function pcGet(page) {
+  const entry = _pageNodes.get(page);
+  if (!entry) return null;
+  const ttl = PAGE_TTL[page];
+  if (!ttl) return null;                            // 캐시 안 하는 페이지
+  if (Date.now() - entry.ts > ttl) { _pageNodes.delete(page); return null; }
+  return entry.node;
+}
+
+function pcSet(page, node) {
+  if (!PAGE_TTL[page]) return;                      // reg-* 등 캐시 제외
+  _pageNodes.set(page, { node, ts: Date.now() });
+}
+
+/** 데이터 변경 후 관련 페이지 캐시 무효화 */
+function pcDel(...pages) {
+  pages.forEach(p => _pageNodes.delete(p));
+}
 
 // ═══════════════════════════════════════════════════════
 // ROUTER
@@ -284,58 +356,68 @@ const PAGE_META = {
 };
 
 function navigate(page) {
-  // 모바일: 페이지 이동 시 사이드바 드로어 자동 닫기
   closeMobileSidebar();
 
   // 사이드바 활성화
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-  const items = document.querySelectorAll('.nav-item');
-  items.forEach(el => {
-    if (el.getAttribute('onclick') && el.getAttribute('onclick').includes(`'${page}'`)) {
-      el.classList.add('active');
-    }
+  document.querySelectorAll('.nav-item').forEach(el => {
+    if (el.getAttribute('onclick')?.includes(`'${page}'`)) el.classList.add('active');
   });
-
-  // 바텀 nav 동기화
   updateBnav(page);
 
-  // 견적 수정 모드 해제 (견적 등록 외 페이지 이동 시)
+  // 견적 수정 모드 해제
   if (page !== 'reg-quotation' && window._editingQuotNo) {
     window._editingQuotNo = null;
     const sb = document.getElementById('quot-save-btn');
     if (sb) { sb.textContent = '💾 저장'; delete sb.dataset.editno; }
   }
-  // 상단 타이틀
+
+  // 상단 타이틀 + 액션 버튼 초기화
   const meta = PAGE_META[page] || { title: page, sub: '' };
   document.getElementById('topbar-title').textContent = meta.title;
   document.getElementById('topbar-sub').textContent   = meta.sub;
   document.getElementById('topbar-actions').innerHTML = '';
 
-  // 페이지 렌더
   const content = document.getElementById('content');
-  // 스크롤 최상단 복귀
   content.scrollTop = 0;
-  switch(page) {
-    case 'dashboard':         renderDashboard(content);       break;
-    case 'settings-staff':    renderSettingsStaff(content);   break;
-    case 'settings-vendor':   renderSettingsVendor(content);  break;
-    case 'settings-project':  renderSettingsProject(content); break;
-    case 'settings-currency': renderSettingsCurrency(content);break;
-    case 'settings-unit':     renderSettingsUnit(content);    break;
-    case 'settings-category': renderSettingsCategory(content);break;
-    case 'settings-division': renderSettingsDivision(content);break;
-    case 'settings-codes':    renderSettingsCodes(content);    break;
-    case 'master-parts':      renderMasterParts(content);     break;
-    case 'master-equipment':  renderMasterEquip(content);     break;
-    case 'reg-quotation':     renderRegQuotation(content);    break;
-    case 'reg-purchase':      renderRegPurchase(content);     break;
-    case 'reg-sales':         renderRegSales(content);        break;
-    case 'list-quotation':    renderListQuotation(content);   break;
-    case 'list-purchase':     renderListPurchase(content);    break;
-    case 'list-sales':        renderListSales(content);       break;
-    case 'ext-quotations':    renderExtQuotations(content);   break;
-    default: content.innerHTML = '<p class="text-muted">준비 중</p>';
+
+  // ── 페이지 DOM 캐시 ─────────────────────────────────────
+  const cached = pcGet(page);
+  if (cached) {
+    content.innerHTML = '';
+    content.appendChild(cached);
+    return; // 즉시 표시 — API 호출 없음
   }
+
+  // ── 최초 렌더: wrapper div에 렌더 후 캐시 등록 ──────────
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = 'width:100%;min-height:100%';
+  content.innerHTML = '';
+  content.appendChild(wrapper);
+
+  switch(page) {
+    case 'dashboard':         renderDashboard(wrapper);       break;
+    case 'settings-staff':    renderSettingsStaff(wrapper);   break;
+    case 'settings-vendor':   renderSettingsVendor(wrapper);  break;
+    case 'settings-project':  renderSettingsProject(wrapper); break;
+    case 'settings-currency': renderSettingsCurrency(wrapper);break;
+    case 'settings-unit':     renderSettingsUnit(wrapper);    break;
+    case 'settings-category': renderSettingsCategory(wrapper);break;
+    case 'settings-division': renderSettingsDivision(wrapper);break;
+    case 'settings-codes':    renderSettingsCodes(wrapper);    break;
+    case 'master-parts':      renderMasterParts(wrapper);     break;
+    case 'master-equipment':  renderMasterEquip(wrapper);     break;
+    case 'reg-quotation':     renderRegQuotation(wrapper);    break;
+    case 'reg-purchase':      renderRegPurchase(wrapper);     break;
+    case 'reg-sales':         renderRegSales(wrapper);        break;
+    case 'list-quotation':    renderListQuotation(wrapper);   break;
+    case 'list-purchase':     renderListPurchase(wrapper);    break;
+    case 'list-sales':        renderListSales(wrapper);       break;
+    case 'ext-quotations':    renderExtQuotations(wrapper);   break;
+    default: wrapper.innerHTML = '<p class="text-muted" style="padding:24px">준비 중</p>';
+  }
+
+  pcSet(page, wrapper); // 렌더 완료 후 캐시 등록
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1353,6 +1435,7 @@ function openPartsModal(data = null) {
         showToast('부품이 추가되었습니다');
       }
       await refreshCache('parts');
+      pcDel('master-parts');
       loadPartsTable();
     }
   });
@@ -1575,6 +1658,7 @@ function openEquipModal(data = null) {
         showToast('장비가 추가되었습니다');
       }
       await refreshCache('equipment');
+      pcDel('master-equipment');
       loadEquipTable();
     }
   });
@@ -2996,6 +3080,7 @@ async function submitQuotation(editQuotNo = null) {
       _qSheetRows = [];
       clearQsStorage();
       window._editingQuotNo = null;
+      pcDel('list-quotation', 'dashboard');
       navigate('list-quotation');
     }
   } catch(e) {
@@ -3266,6 +3351,7 @@ async function submitSales(type, editSalesNo = null) {
       showToast(`${type}이 저장되었습니다 (${salesNo})`);
     }
     _salesLineIdx = 0;
+    pcDel('list-purchase', 'list-sales', 'dashboard');
     navigate(type === '구매' ? 'list-purchase' : 'list-sales');
   } catch(e) {
     showToast('저장 실패: ' + e.message, 'error');
@@ -4413,6 +4499,7 @@ function openExtQuotUploadModal() {
         pBar.style.width = '100%';
         window._eqUploadFile = null;
         showToast('견적서가 업로드되었습니다', 'success');
+        pcDel('ext-quotations');
         loadExtQuotList();
       } catch(e) {
         document.getElementById('eq-progress').style.display = 'none';
@@ -4760,6 +4847,7 @@ async function addExtQuotLink(fileId) {
     const dateEl = document.getElementById('lk-date');
     if (dateEl) dateEl.value = new Date().toISOString().slice(0,10);
     document.getElementById('lk-calc-hint') && (document.getElementById('lk-calc-hint').textContent='');
+    pcDel('master-parts', 'master-equipment', 'ext-quotations');
     loadExtQuotLinkList(fileId);
     loadExtQuotList();
   } catch(e) { showToast('연결 실패: ' + e.message, 'error'); }
@@ -4769,6 +4857,7 @@ async function removeExtQuotLink(fileId, itemType, itemNo) {
   try {
     await api({ action: 'unlinkQuotItem', fileId, itemType, itemNo });
     showToast('연결이 해제되었습니다');
+    pcDel('master-parts', 'master-equipment', 'ext-quotations');
     loadExtQuotLinkList(fileId);
     loadExtQuotList();
   } catch(e) {
@@ -4781,6 +4870,7 @@ async function deleteExtQuotFile(fileId, fileName) {
   try {
     await api({ action: 'deleteExtQuot', fileId });
     showToast('삭제되었습니다');
+    pcDel('ext-quotations', 'master-parts', 'master-equipment');
     loadExtQuotList();
   } catch(e) {
     showToast('삭제 실패: ' + e.message, 'error');
@@ -4908,7 +4998,6 @@ function updateBnav(page) {
 
 // ─── 초기화 ──────────────────────────────────────────────
 function initSidebarState() {
-  // 저장된 collapsed 상태 복원
   if (localStorage.getItem(SB_LS_KEY)) {
     document.body.classList.add('sidebar-collapsed');
   }
@@ -4916,6 +5005,31 @@ function initSidebarState() {
   // ESC → 모바일 드로어 닫기
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeMobileSidebar();
+  });
+
+  // ── Hover 선입력: 메뉴 아이콘 위에 마우스 올리면 150ms 후 데이터 미리 로드 ──
+  // 클릭 전에 GAS cold start를 해소
+  const hoverMap = {
+    'master-parts':     () => { if (!_partsData.length) api({ action:'getParts' }).then(d => { _partsData = d.rows||[]; }); },
+    'master-equipment': () => { if (!_equipData.length) api({ action:'getEquipment' }).then(d => { _equipData = d.rows||[]; }); },
+    'list-quotation':   () => api({ action:'getQuotations', filter:{} }).catch(()=>{}),  // GAS 웜업
+    'list-purchase':    () => api({ action:'getSales', filter:{type:'구매'} }).catch(()=>{}),
+    'list-sales':       () => api({ action:'getSales', filter:{type:'판매'} }).catch(()=>{}),
+    'ext-quotations':   () => api({ action:'getExtQuots', filter:{} }).catch(()=>{}),
+  };
+  let _hoverTimer = null;
+  document.querySelectorAll('.nav-item[data-label]').forEach(el => {
+    const onclick = el.getAttribute('onclick') || '';
+    const m = onclick.match(/navigate\('([^']+)'\)/);
+    if (!m) return;
+    const page = m[1];
+    const fn = hoverMap[page];
+    if (!fn) return;
+    el.addEventListener('mouseenter', () => {
+      clearTimeout(_hoverTimer);
+      _hoverTimer = setTimeout(fn, 150);  // 150ms 후 선입력
+    });
+    el.addEventListener('mouseleave', () => clearTimeout(_hoverTimer));
   });
 }
 
