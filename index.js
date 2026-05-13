@@ -2173,10 +2173,15 @@ function renderRegQuotation(el, prefill = null) {
         <input class="form-input" type="date" id="q-expire">
       </div>
       <div class="form-group">
-        <label class="form-label">프로젝트</label>
-        <select class="form-select" id="q-project">
-          <option value="">-- 선택 --</option>${projOpts}
-        </select>
+        <label class="form-label">프로젝트 <span class="req">*</span></label>
+        <div style="display:flex;gap:6px">
+          <select class="form-select" id="q-project" style="flex:1">
+            <option value="">-- 프로젝트 선택 (필수) --</option>${projOpts}
+          </select>
+          <button type="button" class="btn btn-secondary btn-sm"
+                  onclick="openQuickProjectModal()" title="신규 프로젝트 빠른 생성"
+                  style="flex-shrink:0;white-space:nowrap">＋ 신규</button>
+        </div>
       </div>
       <div class="form-group">
         <label class="form-label">담당자</label>
@@ -3428,18 +3433,94 @@ function resetDetailColWidths() {
   resetColWidths('detail-table');
 }
 
+// ── 견적 등록 내 프로젝트 빠른 생성 ─────────────────────────
+function openQuickProjectModal() {
+  const today = new Date().toISOString().slice(0,10);
+  showModal({
+    title: '📁 신규 프로젝트 생성',
+    body: `
+      <p style="font-size:12px;color:var(--text3);margin-bottom:14px">
+        생성 후 견적 등록 폼의 프로젝트 목록에 즉시 반영됩니다.
+      </p>
+      <div class="form-grid-2">
+        <div class="form-group">
+          <label class="form-label">프로젝트코드</label>
+          <input class="form-input" id="qp-code" placeholder="SG-2025-001">
+        </div>
+        <div class="form-group">
+          <label class="form-label required">프로젝트명</label>
+          <input class="form-input" id="qp-name" placeholder="○○물류창고 자동화" autofocus>
+        </div>
+        <div class="form-group">
+          <label class="form-label">고객사</label>
+          <input class="form-input" id="qp-customer" placeholder="(주)고객사명">
+        </div>
+        <div class="form-group">
+          <label class="form-label">시작일</label>
+          <input class="form-input" type="date" id="qp-start" value="${today}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">상태</label>
+          <select class="form-select" id="qp-status">
+            <option value="진행중">진행중</option>
+            <option value="대기">대기</option>
+            <option value="완료">완료</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">비고</label>
+          <input class="form-input" id="qp-note" placeholder="메모">
+        </div>
+      </div>`,
+    onConfirm: async () => {
+      const name = val('qp-name');
+      if (!name) { showToast('프로젝트명을 입력하세요','error'); return false; }
+      const row = {
+        'ID':          'P-' + Date.now(),
+        '프로젝트코드': val('qp-code'),
+        '프로젝트명':  name,
+        '고객사':      val('qp-customer'),
+        '시작일':      val('qp-start'),
+        '종료일':      '',
+        '상태':        val('qp-status') || '진행중',
+        '비고':        val('qp-note'),
+        '등록일':      '',
+      };
+      await api({ action:'addSetting', sheet:'Settings_Project', row });
+      await refreshCache('project');
+      pcDel('settings-project');
+      refreshProjectDropdown(row['ID'], name);
+      showToast(`"${name}" 프로젝트 생성됨`, 'success');
+    }
+  });
+}
+
+/** 프로젝트 드롭다운 갱신 + 새로 만든 프로젝트 자동 선택 */
+function refreshProjectDropdown(selectId, selectName) {
+  const sel = document.getElementById('q-project');
+  if (!sel) return;
+  const opts = (CACHE.project || []).map(p => {
+    const label = [p['프로젝트코드'], p['프로젝트명']].filter(Boolean).join(' — ');
+    return `<option value="${p['ID']}" data-name="${p['프로젝트명']||''}">${label}</option>`;
+  }).join('');
+  sel.innerHTML = `<option value="">-- 프로젝트 선택 (필수) --</option>${opts}`;
+  if (selectId) sel.value = selectId;
+}
+
+
 // ─── 견적 저장 ────────────────────────────────────────────────
 async function submitQuotation(editQuotNo = null) {
+
   // 수정 모드: 전달인자 없을 때 전역변수 확인
   if (!editQuotNo && window._editingQuotNo) {
     editQuotNo = window._editingQuotNo;
   }
   const date   = val('q-date');
   const vendor = document.getElementById('q-vendor');
+  const proj   = document.getElementById('q-project');
   if (!date)         { showToast('견적일을 입력하세요','error'); return; }
   if (!vendor.value) { showToast('공급사를 선택하세요','error'); return; }
-
-  const proj  = document.getElementById('q-project');
+  if (!proj?.value)  { showToast('프로젝트를 선택하세요 — [＋ 신규] 버튼으로 프로젝트를 먼저 생성하세요','error'); proj?.focus(); return; }
   const staff = document.getElementById('q-staff');
   const vName = vendor.selectedIndex > 0 ? vendor.options[vendor.selectedIndex].getAttribute('data-name') : '';
   const pName = proj.selectedIndex  > 0 ? proj.options[proj.selectedIndex].getAttribute('data-name')   : '';
@@ -3876,41 +3957,117 @@ async function loadQuotList() {
 function renderQuotPage() {
   const el = document.getElementById('qlist-table');
   if (!el) return;
-  const pg = paginateRows(_quotAllRows, _quotPage);
-  _quotPage = pg.page;
+
+  if (!_quotAllRows.length) {
+    el.innerHTML = '<div class="table-empty">등록된 견적이 없습니다</div>';
+    return;
+  }
+
+  // ── 프로젝트별 그룹핑 ──────────────────────────────────────
+  const groupMap = new Map();
+  _quotAllRows.forEach(r => {
+    const key  = r['프로젝트ID'] || '__none__';
+    const name = r['프로젝트명'] || '';
+    if (!groupMap.has(key)) {
+      groupMap.set(key, { name, rows: [], total: 0 });
+    }
+    const g = groupMap.get(key);
+    g.rows.push(r);
+    g.total += Number(r['totalAmount']) || 0;
+  });
+
+  // 프로젝트 있는 그룹 이름순 정렬 → 미분류는 맨 뒤
+  const groups = [...groupMap.entries()].sort((a, b) => {
+    if (a[0] === '__none__') return 1;
+    if (b[0] === '__none__') return -1;
+    return a[1].name.localeCompare(b[1].name, 'ko');
+  });
+
+  const rowHtml = r => `
+    <tr style="background:var(--bg-row,#fff)">
+      <td class="td-mono" style="cursor:pointer;color:var(--accent);padding-left:28px"
+          onclick="openQuotDetail('${r['QuotNo']}')">${r['QuotNo']}</td>
+      <td class="td-muted">${fmtDate(r['견적일'])}</td>
+      <td><strong>${r['공급사명']||''}</strong></td>
+      <td class="td-muted">${r['담당자명']||'—'}</td>
+      <td style="text-align:center">${r['lineCount']||0}</td>
+      <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
+        ${r['totalAmount'] ? '₩'+Number(r['totalAmount']).toLocaleString() : '—'}
+      </td>
+      <td>${badgeStatus(r['상태'])}</td>
+      <td class="td-muted text-sm">${fmtDate(r['등록일'])}</td>
+      <td>
+        <div class="flex gap-2">
+          <button class="btn btn-secondary btn-sm" onclick="openQuotDetail('${r['QuotNo']}')">상세</button>
+          <button class="btn btn-success btn-sm" onclick="openConfirmQuotModal('${r['QuotNo']}')"
+                  ${r['상태']==='확정'?'disabled title="이미 확정됨"':''}>확정</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteQuot('${r['QuotNo']}')">삭제</button>
+        </div>
+      </td>
+    </tr>`;
+
+  const groupHtml = groups.map(([key, g]) => {
+    const isNone = key === '__none__';
+    const label  = isNone ? '미분류 (프로젝트 없음)' : g.name;
+    const gId    = 'qg-' + key.replace(/[^a-zA-Z0-9]/g,'_');
+    return `
+      <div class="quot-group" style="margin-bottom:12px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
+        <!-- 그룹 헤더 -->
+        <div class="quot-group-header" onclick="toggleQuotGroup('${gId}')"
+             style="display:flex;align-items:center;gap:10px;padding:10px 14px;
+                    background:var(--bg2);cursor:pointer;user-select:none;
+                    border-bottom:1px solid var(--border)">
+          <span id="${gId}-icon" style="font-size:12px;transition:transform .2s;display:inline-block">▼</span>
+          <strong style="flex:1;font-size:13px">${label}</strong>
+          <span class="badge badge-blue" style="font-size:11px">${g.rows.length}건</span>
+          <span style="font-size:12px;color:var(--text2);font-family:'JetBrains Mono',monospace">
+            ₩${g.total.toLocaleString()}
+          </span>
+        </div>
+        <!-- 그룹 테이블 -->
+        <div id="${gId}-body">
+          <div class="table-wrap" style="margin:0">
+            <table>
+              <thead><tr style="background:var(--bg)">
+                <th>견적번호</th><th>견적일</th><th>공급사</th>
+                <th>담당자</th><th style="text-align:center">품목수</th>
+                <th style="text-align:right">합계</th>
+                <th>상태</th><th>등록일</th><th></th>
+              </tr></thead>
+              <tbody>${g.rows.map(rowHtml).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
   el.innerHTML = `
-    <div class="table-wrap"><table>
-      <thead><tr>
-        <th>견적번호</th><th>견적일</th><th>공급사</th><th>프로젝트</th>
-        <th>담당자</th><th style="text-align:center">품목수</th>
-        <th style="text-align:right">합계(참고)</th><th>상태</th><th>등록일</th><th></th>
-      </tr></thead>
-      <tbody>
-        ${pg.rows.map(r => `
-        <tr>
-          <td class="td-mono" style="cursor:pointer;color:var(--accent)" onclick="openQuotDetail('${r['QuotNo']}')">${r['QuotNo']}</td>
-          <td class="td-muted">${fmtDate(r['견적일'])}</td>
-          <td><strong>${r['공급사명']||''}</strong></td>
-          <td class="td-muted">${r['프로젝트명']||'—'}</td>
-          <td class="td-muted">${r['담당자명']||'—'}</td>
-          <td style="text-align:center">${r['lineCount']||0}</td>
-          <td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px">
-            ${r['totalAmount'] ? Number(r['totalAmount']).toLocaleString() : '—'}
-          </td>
-          <td>${badgeStatus(r['상태'])}</td>
-          <td class="td-muted text-sm">${fmtDate(r['등록일'])}</td>
-          <td>
-            <div class="flex gap-2">
-              <button class="btn btn-secondary btn-sm" onclick="openQuotDetail('${r['QuotNo']}')">상세</button>
-              <button class="btn btn-success btn-sm" onclick="openConfirmQuotModal('${r['QuotNo']}')"
-                      ${r['상태']==='확정'?'disabled title="이미 확정됨"':''}>확정</button>
-              <button class="btn btn-danger btn-sm" onclick="deleteQuot('${r['QuotNo']}')">삭제</button>
-            </div>
-          </td>
-        </tr>`).join('')}
-      </tbody>
-    </table></div>
-    ${renderPageBar(pg.total, pg.page, pg.pages, PAGE_SIZE, 'goQuotPage')}`;
+    <div style="margin-bottom:8px;font-size:12px;color:var(--text3)">
+      총 ${_quotAllRows.length}건 · ${groups.length}개 프로젝트
+      <button class="btn btn-secondary btn-sm" style="margin-left:8px"
+              onclick="toggleAllQuotGroups(true)">전체 펼치기</button>
+      <button class="btn btn-secondary btn-sm"
+              onclick="toggleAllQuotGroups(false)">전체 접기</button>
+    </div>
+    ${groupHtml}`;
+}
+
+function toggleQuotGroup(gId) {
+  const body = document.getElementById(gId + '-body');
+  const icon = document.getElementById(gId + '-icon');
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : '';
+  if (icon) icon.style.transform = open ? 'rotate(-90deg)' : '';
+}
+
+function toggleAllQuotGroups(expand) {
+  document.querySelectorAll('[id$="-body"]').forEach(body => {
+    if (!body.id.startsWith('qg-')) return;
+    body.style.display = expand ? '' : 'none';
+    const icon = document.getElementById(body.id.replace('-body','-icon'));
+    if (icon) icon.style.transform = expand ? '' : 'rotate(-90deg)';
+  });
 }
 
 function goQuotPage(p) { _quotPage = p; renderQuotPage(); }
