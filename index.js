@@ -219,7 +219,7 @@ async function doLogin() {
 
     // 임시 비밀번호면 변경 강제
     if (d.isTempPw) {
-      showChangePwModal(userId, hash, true);
+      showChangePwModal(userId, true);
       return;
     }
 
@@ -254,61 +254,70 @@ function doLogout() {
   document.getElementById('login-error').textContent = '';
 }
 
-async function tryAutoLogin() {
-  const s = getSession();
-  if (s?.userId && s?.passwordHash) {
-    // 저장된 세션으로 자동 로그인
-    try {
-      const d = await fetch(GAS_URL, {
-        method: 'POST', headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'loginAccount', userId: s.userId, passwordHash: s.passwordHash }),
-      }).then(r => r.json());
-      if (d.ok) {
-        setSession({ ...s, isAdmin: !!d.isAdmin, isTempPw: !!d.isTempPw,
-                     permissions: d.permissions || {}, displayName: d.displayName || s.userId });
-        if (d.isTempPw) { showChangePwModal(s.userId, s.passwordHash, true); return; }
-        enterApp(); return;
-      }
-    } catch(e) {}
-    clearSession();
-  }
-  // 레거시: 구 API키 자동로그인
-  const saved = localStorage.getItem(LS_KEY);
-  if (saved) {
-    try {
-      const ok = await fetch(GAS_URL, {
-        method:'POST', headers:{'Content-Type':'text/plain'},
-        body: JSON.stringify({ action:'verify', apiKey: saved }),
-      }).then(r=>r.json()).then(d=>d.ok);
-      if (ok) { API_KEY = saved; enterApp(); return; }
-    } catch(e) {}
-    localStorage.removeItem(LS_KEY);
-  }
+function tryAutoLogin() {
+  // 자동 로그인 비활성화 — 항상 수동 로그인 필요
+  clearSession();
 }
 
 // ── 비밀번호 변경 모달 ────────────────────────────────────────
-function showChangePwModal(userId, currentHash, isForced = false) {
-  // 로그인 화면 위에 표시
+function showChangePwModal(userId, isForced = false) {
+  // 기존 오버레이 제거
+  document.getElementById('pw-change-overlay')?.remove();
+
   const overlay = document.createElement('div');
   overlay.id = 'pw-change-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:950;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.style.cssText = [
+    'position:fixed','inset:0','background:rgba(0,0,0,.6)',
+    'z-index:950','display:flex','align-items:center',
+    'justify-content:center','padding:20px',
+  ].join(';');
+
+  const inputStyle = [
+    'width:100%','padding:10px 14px','border:1px solid #d0d9e8',
+    'border-radius:8px','font-size:14px','font-family:inherit',
+    'color:#1a2332','background:#f8fafc','outline:none',
+    'box-sizing:border-box',
+  ].join(';');
+
   overlay.innerHTML = `
-    <div style="background:#fff;border-radius:16px;padding:28px 24px;width:100%;max-width:360px;box-shadow:0 16px 48px rgba(0,0,0,.25)">
-      <div style="font-size:15px;font-weight:700;color:#1a2332;margin-bottom:4px">
-        ${isForced ? '🔐 임시 비밀번호 변경 필요' : '🔑 비밀번호 변경'}
+    <div style="background:#fff;border-radius:16px;padding:28px 24px;
+                width:100%;max-width:380px;box-shadow:0 16px 48px rgba(0,0,0,.25)">
+      <div style="font-size:16px;font-weight:700;color:#1a2332;margin-bottom:6px">
+        ${isForced ? '🔐 비밀번호 변경 필요' : '🔑 비밀번호 변경'}
       </div>
-      <p style="font-size:12px;color:#94a3b8;margin-bottom:18px">
-        ${isForced ? '임시 비밀번호로 로그인했습니다. 새 비밀번호를 설정해 주세요.' : '새 비밀번호를 입력하세요.'}
+      <p style="font-size:13px;color:#64748b;margin-bottom:20px;line-height:1.5">
+        ${isForced
+          ? '임시 비밀번호로 로그인하셨습니다.<br>새 비밀번호를 설정해야 서비스를 이용할 수 있습니다.'
+          : '새 비밀번호를 입력해 주세요.'}
       </p>
-      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
-        <input type="password" id="cpw-new1" class="login-input" placeholder="새 비밀번호 (8자 이상)">
-        <input type="password" id="cpw-new2" class="login-input" placeholder="새 비밀번호 확인">
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:6px">
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#5a6a7e;display:block;margin-bottom:4px">
+            새 비밀번호 <span style="color:#e03e3e">*</span>
+          </label>
+          <input type="password" id="cpw-new1" style="${inputStyle}"
+                 placeholder="새 비밀번호 (8자 이상)" autocomplete="new-password">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#5a6a7e;display:block;margin-bottom:4px">
+            새 비밀번호 확인 <span style="color:#e03e3e">*</span>
+          </label>
+          <input type="password" id="cpw-new2" style="${inputStyle}"
+                 placeholder="비밀번호를 다시 입력하세요" autocomplete="new-password"
+                 onkeydown="if(event.key==='Enter') submitChangePw('${userId}')">
+        </div>
       </div>
-      <div id="cpw-err" style="font-size:12px;color:#e03e3e;min-height:16px;margin-bottom:10px"></div>
-      <button class="login-btn" onclick="submitChangePw('${userId}')">변경</button>
+      <div id="cpw-err" style="font-size:12px;color:#e03e3e;min-height:18px;margin-bottom:14px"></div>
+      <button onclick="submitChangePw('${userId}')"
+              style="width:100%;padding:12px;background:#2563eb;color:#fff;border:none;
+                     border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;
+                     font-family:inherit">
+        비밀번호 변경
+      </button>
     </div>`;
+
   document.body.appendChild(overlay);
-  document.getElementById('cpw-new1')?.focus();
+  setTimeout(() => document.getElementById('cpw-new1')?.focus(), 50);
 }
 
 async function submitChangePw(userId) {
