@@ -881,23 +881,20 @@ function openStaffModal(data=null) {
               '권한JSON': JSON.stringify(perms),
             };
             if (newId && newId !== d['아이디']) {
-              // 아이디 변경 시 GAS에서 중복 확인
-              const r = await api({
-                action:  'setupAccount',
-                staffId: d['ID'],
-                userId:  newId,
-                isAdmin: isAdminVal,
-                permissions: perms,
-              });
-              if (!r.ok) { showToast(r.error || '아이디 변경 실패', 'error'); return false; }
-              // 계정 변경 후 GAS 캐시 강제 초기화
-              await api({ action: 'clearCache' }).catch(() => {});
-              showToast(`아이디가 ${newId} 으로 변경됐습니다 (임시비밀번호 재설정됨)`, 'info', 3000);
-            } else if (newId) {
-              // 아이디 유지, 권한/관리자 여부만 업데이트
+              // 아이디 변경: 프론트에서 중복 확인 후 updateSetting으로만 처리 (비밀번호 초기화 안 함)
+              const dupCheck = await api({ action:'testSetupAccount', staffId:d['ID'], userId:newId });
+              if (dupCheck.wouldBlock) {
+                const who = dupCheck.conflictingRows?.[0];
+                showToast(`"${newId}" 은(는) ${who?.['이름'] || '다른 직원'}이 이미 사용 중입니다`, 'error');
+                return false;
+              }
+              updates['아이디'] = newId;
+            }
+            if (newId) {
               const r = await api({ action:'updateSetting', sheet:'Settings_Staff',
                                     id:d['ID'], idField:'ID', row:updates });
               if (!r.ok) { showToast(r.error || '계정 업데이트 실패', 'error'); return false; }
+              await api({ action:'clearCache' }).catch(() => {});
             }
           }
         }
