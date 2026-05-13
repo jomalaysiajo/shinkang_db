@@ -824,7 +824,7 @@ function openStaffModal(data=null) {
         </div>`}
       </div>` : ''}
 
-      ${isAdmin && isEdit && !d['isAdmin'] ? `
+      ${isAdmin && isEdit && d['isAdmin'] !== 'Y' ? `
       <!-- 권한 설정 -->
       <div style="margin-top:12px;padding:14px;background:var(--bg);border-radius:var(--r);border:1px solid var(--border)">
         <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">
@@ -846,20 +846,34 @@ function openStaffModal(data=null) {
       if (isEdit) {
         await api({ action:'updateSetting', sheet:'Settings_Staff', id:d['ID'], idField:'ID', row });
 
-        // 계정 설정 처리 (관리자만)
         if (isAdmin) {
-          const newId = val('f-accountid').trim();
-          if (newId && newId !== d['아이디']) {
-            // 아이디 변경 또는 신규 계정 생성
-            const hash = await hashPassword('1234567890'); // 임시 비밀번호
-            await api({ action:'setupAccount', staffId:d['ID'],
-                        userId:newId, passwordHash:hash,
-                        isAdmin: val('f-isadmin')==='Y' });
-          } else if (newId) {
-            // 관리자 여부만 업데이트
-            const perms = collectPermissions();
-            await api({ action:'updatePermissions', targetId:d['ID'],
-                        permissions:perms, isAdmin: val('f-isadmin')==='Y' });
+          const newId      = val('f-accountid').trim();
+          const hasExisting= !!(d['아이디']);
+          const isAdminVal = val('f-isadmin') === 'Y';
+
+          if (!hasExisting && newId) {
+            // ── 신규 계정 생성 (처음 아이디 설정)
+            const hash = await hashPassword('1234567890');
+            const r = await api({ action:'setupAccount', staffId:d['ID'],
+                                  userId:newId, passwordHash:hash, isAdmin:isAdminVal });
+            if (!r.ok) { showToast(r.error || '계정 생성 실패', 'error'); return false; }
+          } else if (hasExisting) {
+            // ── 기존 계정 수정 — 아이디/관리자/권한만 업데이트 (비밀번호 유지)
+            const updates = {
+              'isAdmin':  isAdminVal ? 'Y' : 'N',
+              '권한JSON': JSON.stringify(collectPermissions()),
+            };
+            // 아이디 변경 시: 중복 확인 후 추가
+            if (newId && newId !== d['아이디']) {
+              const dup = (CACHE.staff || []).some(s =>
+                s['아이디'] === newId && s['ID'] !== d['ID']
+              );
+              if (dup) { showToast('이미 사용 중인 아이디입니다', 'error'); return false; }
+              updates['아이디'] = newId;
+            }
+            const r = await api({ action:'updateSetting', sheet:'Settings_Staff',
+                                  id:d['ID'], idField:'ID', row:updates });
+            if (!r.ok) { showToast(r.error || '계정 업데이트 실패', 'error'); return false; }
           }
         }
         showToast('수정되었습니다');
@@ -867,6 +881,7 @@ function openStaffModal(data=null) {
         await api({ action:'addSetting', sheet:'Settings_Staff', row });
         showToast('추가되었습니다');
       }
+      pcDel('settings-staff');
       await refreshCache('staff'); loadStaffTable();
     }
   });
@@ -885,19 +900,25 @@ function buildPermissionUI(jsonStr) {
   let perms = {};
   try { if (jsonStr) perms = JSON.parse(jsonStr); } catch(e) {}
   return `
-  <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:4px 8px;align-items:center;font-size:12px">
+  <div style="display:flex;gap:6px;margin-bottom:8px">
+    <button type="button" class="btn btn-secondary btn-xs"
+            onclick="toggleAllPermissions(true)">✅ 전체 선택</button>
+    <button type="button" class="btn btn-secondary btn-xs"
+            onclick="toggleAllPermissions(false)">☐ 전체 해제</button>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:4px 12px;align-items:center;font-size:12px">
     <div style="font-weight:600;color:var(--text3)">메뉴</div>
     <div style="font-weight:600;color:var(--text3);text-align:center">열람</div>
     <div style="font-weight:600;color:var(--text3);text-align:center">입력/수정</div>
     <div style="font-weight:600;color:var(--text3);text-align:center">삭제</div>
     ${AREAS.map(a => `
-    <div>${a.label}</div>
+    <div style="padding:2px 0">${a.label}</div>
     <div style="text-align:center"><input type="checkbox" id="perm-${a.key}-view"
-         ${(perms[a.key]?.view||perms[a.key]?.view===1)?'checked':''}></div>
+         ${(perms[a.key]?.view || perms[a.key]?.view===1) ? 'checked' : ''}></div>
     <div style="text-align:center"><input type="checkbox" id="perm-${a.key}-edit"
-         ${(perms[a.key]?.edit||perms[a.key]?.edit===1)?'checked':''}></div>
+         ${(perms[a.key]?.edit || perms[a.key]?.edit===1) ? 'checked' : ''}></div>
     <div style="text-align:center"><input type="checkbox" id="perm-${a.key}-delete"
-         ${(perms[a.key]?.delete||perms[a.key]?.delete===1)?'checked':''}></div>`).join('')}
+         ${(perms[a.key]?.delete || perms[a.key]?.delete===1) ? 'checked' : ''}></div>`).join('')}
   </div>`;
 }
 
@@ -912,6 +933,10 @@ function collectPermissions() {
     };
   });
   return perms;
+}
+
+function toggleAllPermissions(checked) {
+  document.querySelectorAll('[id^="perm-"]').forEach(cb => { cb.checked = checked; });
 }
 
 async function resetStaffPassword(staffId, name) {
