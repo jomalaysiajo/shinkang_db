@@ -871,6 +871,8 @@ function openStaffModal(data=null) {
               permissions: perms,   // 사용자가 설정한 권한 전달
             });
             if (!r.ok) { showToast(r.error || '계정 생성 실패', 'error'); return false; }
+            // 계정 컬럼 반영을 위해 GAS 캐시 강제 초기화
+            await api({ action: 'clearCache' }).catch(() => {});
             showToast(`계정 생성 완료 — 임시 비밀번호: 1234567890`, 'success', 4000);
           } else if (hasExisting) {
             // ── 기존 계정 수정 — 아이디/관리자/권한 업데이트 (비밀번호 유지)
@@ -888,6 +890,8 @@ function openStaffModal(data=null) {
                 permissions: perms,
               });
               if (!r.ok) { showToast(r.error || '아이디 변경 실패', 'error'); return false; }
+              // 계정 변경 후 GAS 캐시 강제 초기화
+              await api({ action: 'clearCache' }).catch(() => {});
               showToast(`아이디가 ${newId} 으로 변경됐습니다 (임시비밀번호 재설정됨)`, 'info', 3000);
             } else if (newId) {
               // 아이디 유지, 권한/관리자 여부만 업데이트
