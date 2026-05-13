@@ -3,11 +3,56 @@
 // ═══════════════════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════════════════
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbyyE7v6Fj7YP4OSd3fnRIlP2Xx4x_R99yqrTeiIk_EKXsbOjEO7iOyCuU8v8jJFXEhswQ/exec';
-const LS_KEY  = 'sgintech_db_key';
+const GAS_URL     = 'https://script.google.com/macros/s/AKfycbyyE7v6Fj7YP4OSd3fnRIlP2Xx4x_R99yqrTeiIk_EKXsbOjEO7iOyCuU8v8jJFXEhswQ/exec';
+const LS_KEY      = 'sgintech_db_key';     // 레거시 (자동로그인 호환용)
+const SESSION_KEY = 'sgintech_session';    // 개별 계정 세션
 
 let API_KEY = '';
-let CACHE   = {}; // 설정 캐시
+let CACHE   = {};
+
+// ════════════════════════════════════════════════════════
+// 계정/세션 관리
+// ════════════════════════════════════════════════════════
+// 세션 구조: { userId, passwordHash, displayName, isAdmin, isTempPw, permissions }
+
+function getSession() {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); }
+  catch(e) { return null; }
+}
+
+function setSession(s) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+}
+
+function clearSession() {
+  localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem(LS_KEY);
+}
+
+/** SHA-256 해시 (Web Crypto API) */
+async function hashPassword(pw) {
+  const buf  = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+/**
+ * 권한 확인
+ * area: 'parts'|'equip'|'quotation'|'purchase'|'sales'|'extquot'|'settings'|'dashboard'
+ * action: 'view'|'edit'|'delete'
+ */
+function hasPermission(area, action = 'view') {
+  const s = getSession();
+  if (!s) return false;
+  if (s.isAdmin) return true;
+  const p = s.permissions?.[area];
+  if (p === undefined) return action === 'view';  // 기본: 열람만
+  return !!(p[action] || p[action] === 1);
+}
+
+/** 현재 로그인 사용자 표시명 */
+function getDisplayName() {
+  return getSession()?.displayName || '사용자';
+}
 
 // ── 성능 최적화: debounce + 행 데이터 캐시 ───────────────────
 // debounce: 연속 입력 시 마지막 호출만 실행
@@ -94,7 +139,14 @@ function validateApiResponse(data, context) {
 }
 
 async function api(body) {
-  body.apiKey = API_KEY;
+  // 인증 정보 자동 주입: 세션 있으면 userId+hash, 없으면 레거시 API키
+  const session = getSession();
+  if (session?.userId) {
+    body.userId       = session.userId;
+    body.passwordHash = session.passwordHash;
+  } else {
+    body.apiKey = API_KEY;
+  }
   let res;
   try {
     res = await fetch(GAS_URL, {
@@ -117,7 +169,7 @@ async function api(body) {
   validateApiResponse(data, body.action || '?');
 
   if (!data.ok && data.error === 'UNAUTHORIZED') {
-    showToast('인증 오류: 비밀번호를 확인하세요', 'error');
+    showToast('인증 오류: 다시 로그인해 주세요', 'error');
     doLogout();
     throw new Error('UNAUTHORIZED');
   }
@@ -125,95 +177,173 @@ async function api(body) {
 }
 
 // ═══════════════════════════════════════════════════════
-// AUTH
+// AUTH — 개별 계정 로그인
 // ═══════════════════════════════════════════════════════
-// ── 서버 비밀번호 검증 공통 함수 ──────────────────────────────
-async function verifyWithServer(pw) {
-  let res;
-  try {
-    res = await fetch(GAS_URL, {
-      method:  'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body:    JSON.stringify({ action: 'verify', apiKey: pw }),
-    });
-  } catch(networkErr) {
-    throw Object.assign(new Error('NETWORK'), { detail: networkErr.message });
-  }
-  if (!res.ok) throw Object.assign(new Error('HTTP'), { detail: `${res.status} ${res.statusText}` });
-
-  let data;
-  try { data = await res.json(); }
-  catch(e) { throw Object.assign(new Error('PARSE'), { detail: 'JSON 파싱 실패' }); }
-
-  // 응답 구조 검증: 반드시 { ok: boolean } 형태여야 함
-  if (typeof data !== 'object' || data === null || typeof data.ok !== 'boolean')
-    throw Object.assign(new Error('INVALID'), { detail: '응답에 ok 필드 없음: ' + JSON.stringify(data).slice(0,80) });
-
-  return data.ok;  // true = 인증 성공
-}
 
 async function doLogin() {
-  const pw    = document.getElementById('login-pw').value.trim();
-  const errEl = document.getElementById('login-error');
-  const btn   = document.querySelector('.login-btn');
-  if (!pw) { errEl.textContent = '비밀번호를 입력하세요'; return; }
-  if (pw.length < 4) { errEl.textContent = '비밀번호는 4자 이상이어야 합니다'; return; }
+  const userId = (document.getElementById('login-id')?.value || '').trim();
+  const pw     = document.getElementById('login-pw').value;
+  const errEl  = document.getElementById('login-error');
+  const btn    = document.querySelector('.login-btn');
+
+  if (!userId) { errEl.textContent = '아이디를 입력하세요'; return; }
+  if (!pw)     { errEl.textContent = '비밀번호를 입력하세요'; return; }
 
   btn.textContent = '확인 중...'; btn.disabled = true;
   errEl.textContent = '';
-  document.getElementById('login-pw').classList.remove('error');
 
   try {
-    const ok = await verifyWithServer(pw);
-    if (ok) {
-      API_KEY = pw;
-      localStorage.setItem(LS_KEY, pw);
-      document.getElementById('login-screen').classList.add('hidden');
-      document.getElementById('app').classList.add('visible');
-      loadCache();
-      navigate('dashboard');
-    } else {
-      errEl.textContent = '비밀번호가 올바르지 않습니다';
+    const hash = await hashPassword(pw);
+    const d    = await fetch(GAS_URL, {
+      method:  'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body:    JSON.stringify({ action: 'loginAccount', userId, passwordHash: hash }),
+    }).then(r => r.json());
+
+    if (!d.ok) {
+      errEl.textContent = '아이디 또는 비밀번호가 올바르지 않습니다';
       document.getElementById('login-pw').classList.add('error');
+      return;
     }
+
+    // 세션 저장
+    setSession({
+      userId,
+      passwordHash: hash,
+      displayName:  d.displayName  || userId,
+      isAdmin:      !!d.isAdmin,
+      isTempPw:     !!d.isTempPw,
+      permissions:  d.permissions  || {},
+      staffId:      d.staffId      || null,
+    });
+
+    // 임시 비밀번호면 변경 강제
+    if (d.isTempPw) {
+      showChangePwModal(userId, hash, true);
+      return;
+    }
+
+    enterApp();
   } catch(e) {
-    const msgMap = {
-      NETWORK: '서버에 연결할 수 없습니다. 네트워크를 확인해 주세요.',
-      HTTP:    `서버 오류 (${e.detail}). 잠시 후 다시 시도해 주세요.`,
-      PARSE:   '서버 응답을 읽지 못했습니다. 관리자에게 문의하세요.',
-      INVALID: '예상치 못한 응답 형식입니다. 관리자에게 문의하세요.',
-    };
-    errEl.textContent = msgMap[e.message] || '알 수 없는 오류가 발생했습니다.';
+    errEl.textContent = '서버 오류: ' + e.message;
   } finally {
-    btn.textContent = '접속'; btn.disabled = false;
+    btn.textContent = '로그인'; btn.disabled = false;
   }
 }
 
+function enterApp() {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app').classList.add('visible');
+  // 상단 사용자명 업데이트
+  const dot = document.querySelector('.topbar-user-dot');
+  if (dot) dot.title = getDisplayName() + ' 로그인 중';
+  loadCache();
+  navigate('dashboard');
+}
+
 function doLogout() {
-  localStorage.removeItem(LS_KEY);
+  clearSession();
   API_KEY = ''; CACHE = {};
+  _pageNodes.clear();
   document.getElementById('app').classList.remove('visible');
   document.getElementById('login-screen').classList.remove('hidden');
-  document.getElementById('login-pw').value = '';
+  const idEl = document.getElementById('login-id');
+  const pwEl = document.getElementById('login-pw');
+  if (idEl) idEl.value = '';
+  if (pwEl) pwEl.value = '';
   document.getElementById('login-error').textContent = '';
 }
 
-// 저장된 키로 자동 로그인 시도
 async function tryAutoLogin() {
+  const s = getSession();
+  if (s?.userId && s?.passwordHash) {
+    // 저장된 세션으로 자동 로그인
+    try {
+      const d = await fetch(GAS_URL, {
+        method: 'POST', headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ action: 'loginAccount', userId: s.userId, passwordHash: s.passwordHash }),
+      }).then(r => r.json());
+      if (d.ok) {
+        setSession({ ...s, isAdmin: !!d.isAdmin, isTempPw: !!d.isTempPw,
+                     permissions: d.permissions || {}, displayName: d.displayName || s.userId });
+        if (d.isTempPw) { showChangePwModal(s.userId, s.passwordHash, true); return; }
+        enterApp(); return;
+      }
+    } catch(e) {}
+    clearSession();
+  }
+  // 레거시: 구 API키 자동로그인
   const saved = localStorage.getItem(LS_KEY);
-  if (!saved) return;
+  if (saved) {
+    try {
+      const ok = await fetch(GAS_URL, {
+        method:'POST', headers:{'Content-Type':'text/plain'},
+        body: JSON.stringify({ action:'verify', apiKey: saved }),
+      }).then(r=>r.json()).then(d=>d.ok);
+      if (ok) { API_KEY = saved; enterApp(); return; }
+    } catch(e) {}
+    localStorage.removeItem(LS_KEY);
+  }
+}
+
+// ── 비밀번호 변경 모달 ────────────────────────────────────────
+function showChangePwModal(userId, currentHash, isForced = false) {
+  // 로그인 화면 위에 표시
+  const overlay = document.createElement('div');
+  overlay.id = 'pw-change-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:950;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:16px;padding:28px 24px;width:100%;max-width:360px;box-shadow:0 16px 48px rgba(0,0,0,.25)">
+      <div style="font-size:15px;font-weight:700;color:#1a2332;margin-bottom:4px">
+        ${isForced ? '🔐 임시 비밀번호 변경 필요' : '🔑 비밀번호 변경'}
+      </div>
+      <p style="font-size:12px;color:#94a3b8;margin-bottom:18px">
+        ${isForced ? '임시 비밀번호로 로그인했습니다. 새 비밀번호를 설정해 주세요.' : '새 비밀번호를 입력하세요.'}
+      </p>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
+        <input type="password" id="cpw-new1" class="login-input" placeholder="새 비밀번호 (8자 이상)">
+        <input type="password" id="cpw-new2" class="login-input" placeholder="새 비밀번호 확인">
+      </div>
+      <div id="cpw-err" style="font-size:12px;color:#e03e3e;min-height:16px;margin-bottom:10px"></div>
+      <button class="login-btn" onclick="submitChangePw('${userId}')">변경</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('cpw-new1')?.focus();
+}
+
+async function submitChangePw(userId) {
+  const pw1  = document.getElementById('cpw-new1')?.value || '';
+  const pw2  = document.getElementById('cpw-new2')?.value || '';
+  const errEl= document.getElementById('cpw-err');
+  if (pw1.length < 8) { errEl.textContent = '비밀번호는 8자 이상이어야 합니다'; return; }
+  if (pw1 !== pw2)    { errEl.textContent = '비밀번호가 일치하지 않습니다'; return; }
+
   try {
-    const ok = await verifyWithServer(saved);
-    if (ok) {
-      API_KEY = saved;
-      document.getElementById('login-screen').classList.add('hidden');
-      document.getElementById('app').classList.add('visible');
-      loadCache();
-      navigate('dashboard');
-    } else {
-      localStorage.removeItem(LS_KEY); // 저장된 키가 유효하지 않으면 제거
-    }
-  } catch(e) {} // 네트워크 오류 시 조용히 무시 (수동 로그인 대기)
+    const s       = getSession();
+    const oldHash = s?.passwordHash || '';
+    const newHash = await hashPassword(pw1);
+
+    // 인증 페이로드: 세션 있으면 userId+hash, 없으면 레거시 apiKey
+    const authPayload = s?.userId
+      ? { userId: s.userId, passwordHash: s.passwordHash }
+      : { apiKey: API_KEY || '' };
+
+    const d = await fetch(GAS_URL, {
+      method:'POST', headers:{'Content-Type':'text/plain'},
+      body: JSON.stringify({ action:'changePassword', userId,
+                             oldHash, newHash, ...authPayload }),
+    }).then(r => r.json());
+
+    if (!d.ok) { errEl.textContent = d.error || '변경 실패'; return; }
+
+    // 세션 업데이트 후 재로그인
+    if (s) setSession({ ...s, passwordHash: newHash, isTempPw: false });
+    document.getElementById('pw-change-overlay')?.remove();
+    showToast('비밀번호가 변경되었습니다. 다시 로그인해 주세요.', 'success', 4000);
+    doLogout();
+  } catch(e) {
+    errEl.textContent = '오류: ' + e.message;
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -624,9 +754,12 @@ async function loadStaffTable() {
   }
 }
 function openStaffModal(data=null) {
-  const isEdit=!!data, d=data||{};
+  const isEdit = !!data, d = data || {};
+  const isAdmin = getSession()?.isAdmin;
+  const hasAccount = !!(d['아이디']);
+
   showModal({
-    title: isEdit?'직원 수정':'직원 추가',
+    title: isEdit ? '직원 수정' : '직원 추가',
     body:`
       <div class="form-grid form-grid-2">
         <div class="form-group">
@@ -656,16 +789,139 @@ function openStaffModal(data=null) {
             <option value="N" ${d['사용여부']==='N'?'selected':''}>미사용</option>
           </select>
         </div>
-      </div>`,
-    onConfirm: async()=>{
-      const row={'ID':d['ID']||('ST-'+Date.now()),'이름':val('f-name'),'부서':val('f-dept'),
-        '직급':val('f-rank'),'연락처':val('f-tel'),'이메일':val('f-email'),'사용여부':val('f-use'),'등록일':d['등록일']||''};
-      if(!row['이름']){showToast('이름을 입력하세요','error');return false;}
-      if(isEdit){await api({action:'updateSetting',sheet:'Settings_Staff',id:d['ID'],idField:'ID',row});showToast('수정되었습니다');}
-      else{await api({action:'addSetting',sheet:'Settings_Staff',row});showToast('추가되었습니다');}
+      </div>
+
+      ${isAdmin && isEdit ? `
+      <!-- 계정 설정 섹션 (관리자만 표시) -->
+      <div style="margin-top:16px;padding:14px;background:var(--bg);border-radius:var(--r);border:1px solid var(--border)">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">
+          🔐 계정 설정
+        </div>
+        <div class="form-grid-2">
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">로그인 아이디</label>
+            <input class="form-input" id="f-accountid" value="${d['아이디']||''}"
+                   placeholder="영문·숫자 (예: hong)">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">관리자 여부</label>
+            <select class="form-select" id="f-isadmin">
+              <option value="N" ${d['isAdmin']!=='Y'?'selected':''}>일반 사용자</option>
+              <option value="Y" ${d['isAdmin']==='Y'?'selected':''}>관리자</option>
+            </select>
+          </div>
+        </div>
+        ${hasAccount ? `
+        <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+          <span style="font-size:12px;color:var(--text2)">비밀번호:</span>
+          <button class="btn btn-secondary btn-sm" onclick="resetStaffPassword('${d['ID']}','${d['이름']||''}')">
+            🔄 임시 비밀번호로 초기화
+          </button>
+          <span style="font-size:11px;color:var(--text3)">→ 임시: 1234567890</span>
+        </div>` : `
+        <div style="margin-top:10px;font-size:12px;color:var(--text3)">
+          아이디를 입력하면 임시 비밀번호(1234567890)로 계정이 생성됩니다.
+        </div>`}
+      </div>` : ''}
+
+      ${isAdmin && isEdit && !d['isAdmin'] ? `
+      <!-- 권한 설정 -->
+      <div style="margin-top:12px;padding:14px;background:var(--bg);border-radius:var(--r);border:1px solid var(--border)">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">
+          🛡️ 메뉴 권한 (관리자 제외 적용)
+        </div>
+        ${buildPermissionUI(d['권한JSON'])}
+      </div>` : ''}`,
+
+    onConfirm: async () => {
+      const row = {
+        'ID':     d['ID'] || ('ST-' + Date.now()),
+        '이름':   val('f-name'), '부서': val('f-dept'),
+        '직급':   val('f-rank'), '연락처': val('f-tel'),
+        '이메일': val('f-email'), '사용여부': val('f-use'),
+        '등록일': d['등록일'] || '',
+      };
+      if (!row['이름']) { showToast('이름을 입력하세요','error'); return false; }
+
+      if (isEdit) {
+        await api({ action:'updateSetting', sheet:'Settings_Staff', id:d['ID'], idField:'ID', row });
+
+        // 계정 설정 처리 (관리자만)
+        if (isAdmin) {
+          const newId = val('f-accountid').trim();
+          if (newId && newId !== d['아이디']) {
+            // 아이디 변경 또는 신규 계정 생성
+            const hash = await hashPassword('1234567890'); // 임시 비밀번호
+            await api({ action:'setupAccount', staffId:d['ID'],
+                        userId:newId, passwordHash:hash,
+                        isAdmin: val('f-isadmin')==='Y' });
+          } else if (newId) {
+            // 관리자 여부만 업데이트
+            const perms = collectPermissions();
+            await api({ action:'updatePermissions', targetId:d['ID'],
+                        permissions:perms, isAdmin: val('f-isadmin')==='Y' });
+          }
+        }
+        showToast('수정되었습니다');
+      } else {
+        await api({ action:'addSetting', sheet:'Settings_Staff', row });
+        showToast('추가되었습니다');
+      }
       await refreshCache('staff'); loadStaffTable();
     }
   });
+}
+
+function buildPermissionUI(jsonStr) {
+  const AREAS = [
+    { key:'parts',     label:'Parts DB' },
+    { key:'equip',     label:'Equipment DB' },
+    { key:'quotation', label:'견적 관리' },
+    { key:'purchase',  label:'구매 관리' },
+    { key:'sales',     label:'판매 관리' },
+    { key:'extquot',   label:'외부 견적서' },
+    { key:'settings',  label:'설정' },
+  ];
+  let perms = {};
+  try { if (jsonStr) perms = JSON.parse(jsonStr); } catch(e) {}
+  return `
+  <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:4px 8px;align-items:center;font-size:12px">
+    <div style="font-weight:600;color:var(--text3)">메뉴</div>
+    <div style="font-weight:600;color:var(--text3);text-align:center">열람</div>
+    <div style="font-weight:600;color:var(--text3);text-align:center">입력/수정</div>
+    <div style="font-weight:600;color:var(--text3);text-align:center">삭제</div>
+    ${AREAS.map(a => `
+    <div>${a.label}</div>
+    <div style="text-align:center"><input type="checkbox" id="perm-${a.key}-view"
+         ${(perms[a.key]?.view||perms[a.key]?.view===1)?'checked':''}></div>
+    <div style="text-align:center"><input type="checkbox" id="perm-${a.key}-edit"
+         ${(perms[a.key]?.edit||perms[a.key]?.edit===1)?'checked':''}></div>
+    <div style="text-align:center"><input type="checkbox" id="perm-${a.key}-delete"
+         ${(perms[a.key]?.delete||perms[a.key]?.delete===1)?'checked':''}></div>`).join('')}
+  </div>`;
+}
+
+function collectPermissions() {
+  const AREAS = ['parts','equip','quotation','purchase','sales','extquot','settings'];
+  const perms = {};
+  AREAS.forEach(k => {
+    perms[k] = {
+      view:   document.getElementById(`perm-${k}-view`)?.checked   ? 1 : 0,
+      edit:   document.getElementById(`perm-${k}-edit`)?.checked   ? 1 : 0,
+      delete: document.getElementById(`perm-${k}-delete`)?.checked ? 1 : 0,
+    };
+  });
+  return perms;
+}
+
+async function resetStaffPassword(staffId, name) {
+  if (!confirm(`"${name}"의 비밀번호를 임시 비밀번호(1234567890)로 초기화하시겠습니까?`)) return;
+  try {
+    await api({ action:'resetPassword', targetId:staffId });
+    showToast(`${name}의 비밀번호가 초기화되었습니다`);
+  } catch(e) {
+    showToast('초기화 실패: ' + e.message, 'error');
+  }
 }
 
 // ─── 공급사 관리 ──────────────────────────────────────────
@@ -2646,15 +2902,12 @@ function getQsRows() {
 function convertSheetDateToNo(val) {
   if (!val || typeof val !== 'string') return val;
   const v = val.trim();
-  // ISO 날짜 문자열 패턴 감지
-  if (!/^\d{4}-\d{2}-\d{2}T/.test(v)) return v;
+  // ISO 날짜 문자열 패턴 감지 (T 구분자 또는 공백 구분자 모두 처리)
+  // 예: '2025-01-01T00:00:00.000Z', '2025-01-01 00:00:00'
+  if (!/^\d{4}-\d{2}-\d{2}[T ]/.test(v)) return v;
   try {
-    const d   = new Date(v);
-    // KST = UTC+9
-    const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
-    const m   = kst.getUTCMonth() + 1;  // 1~12
-    const day = kst.getUTCDate();       // 1~31
-    return `${m}-${day}`;              // '1-1', '2-1' 등 원래 값으로 복원
+    const [year, month, day] = v.substring(0, 10).split('-').map(Number);
+    return `${month}-${day}`;  // '1-1', '2-15' 등 원래 값으로 복원
   } catch(e) { return v; }
 }
 
