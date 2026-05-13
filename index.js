@@ -859,30 +859,42 @@ function openStaffModal(data=null) {
           const newId      = val('f-accountid').trim();
           const hasExisting= !!(d['아이디']);
           const isAdminVal = val('f-isadmin') === 'Y';
+          const perms      = collectPermissions();  // 항상 미리 수집
 
           if (!hasExisting && newId) {
-            // ── 신규 계정 생성 (처음 아이디 설정)
-            const hash = await hashPassword('1234567890');
-            const r = await api({ action:'setupAccount', staffId:d['ID'],
-                                  userId:newId, passwordHash:hash, isAdmin:isAdminVal });
+            // ── 신규 계정 생성 (비밀번호 해시는 GAS에서 계산 — 임시비밀번호 통일)
+            const r = await api({
+              action:   'setupAccount',
+              staffId:  d['ID'],
+              userId:   newId,
+              isAdmin:  isAdminVal,
+              permissions: perms,   // 사용자가 설정한 권한 전달
+            });
             if (!r.ok) { showToast(r.error || '계정 생성 실패', 'error'); return false; }
+            showToast(`계정 생성 완료 — 임시 비밀번호: 1234567890`, 'success', 4000);
           } else if (hasExisting) {
-            // ── 기존 계정 수정 — 아이디/관리자/권한만 업데이트 (비밀번호 유지)
+            // ── 기존 계정 수정 — 아이디/관리자/권한 업데이트 (비밀번호 유지)
             const updates = {
               'isAdmin':  isAdminVal ? 'Y' : 'N',
-              '권한JSON': JSON.stringify(collectPermissions()),
+              '권한JSON': JSON.stringify(perms),
             };
-            // 아이디 변경 시: 중복 확인 후 추가
             if (newId && newId !== d['아이디']) {
-              const dup = (CACHE.staff || []).some(s =>
-                s['아이디'] === newId && s['ID'] !== d['ID']
-              );
-              if (dup) { showToast('이미 사용 중인 아이디입니다', 'error'); return false; }
-              updates['아이디'] = newId;
+              // 아이디 변경 시 GAS에서 중복 확인
+              const r = await api({
+                action:  'setupAccount',
+                staffId: d['ID'],
+                userId:  newId,
+                isAdmin: isAdminVal,
+                permissions: perms,
+              });
+              if (!r.ok) { showToast(r.error || '아이디 변경 실패', 'error'); return false; }
+              showToast(`아이디가 ${newId} 으로 변경됐습니다 (임시비밀번호 재설정됨)`, 'info', 3000);
+            } else if (newId) {
+              // 아이디 유지, 권한/관리자 여부만 업데이트
+              const r = await api({ action:'updateSetting', sheet:'Settings_Staff',
+                                    id:d['ID'], idField:'ID', row:updates });
+              if (!r.ok) { showToast(r.error || '계정 업데이트 실패', 'error'); return false; }
             }
-            const r = await api({ action:'updateSetting', sheet:'Settings_Staff',
-                                  id:d['ID'], idField:'ID', row:updates });
-            if (!r.ok) { showToast(r.error || '계정 업데이트 실패', 'error'); return false; }
           }
         }
         showToast('수정되었습니다');
@@ -891,7 +903,8 @@ function openStaffModal(data=null) {
         showToast('추가되었습니다');
       }
       pcDel('settings-staff');
-      await refreshCache('staff'); loadStaffTable();
+      await refreshCache('staff');
+      await loadStaffTable();  // ② await 추가 — 저장 후 반드시 최신 데이터로 테이블 갱신
     }
   });
 }
@@ -1526,25 +1539,41 @@ function switchCodesTab(tab, btn) {
 // ═══════════════════════════════════════════════════════
 // MASTER DB - PARTS
 // ═══════════════════════════════════════════════════════
+// 현재 선택된 Part/Equipment 행 데이터
+let _selectedPart  = null;
+let _selectedEquip = null;
+
 async function renderMasterParts(el) {
+  _selectedPart = null;
   el.innerHTML = `
-  <div class="card">
-    <div class="card-header">
-      <div class="card-title">🔩 Parts 목록</div>
-      <div class="flex gap-2">
-        <div class="search-input-wrap">
-          <span class="search-icon">🔍</span>
-          <input class="search-input" id="parts-search" placeholder="품명, 모델명, 제조사 검색..."
-                 oninput="filterPartsTable(this.value)">
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <!-- 상단: 목록 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">🔩 Parts 목록</div>
+        <div class="flex gap-2">
+          <div class="search-input-wrap">
+            <span class="search-icon">🔍</span>
+            <input class="search-input" id="parts-search" placeholder="품번, 품명, 모델명 검색..."
+                   oninput="filterPartsTable(this.value)">
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="selectPart(null)">+ 신규 등록</button>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="openPartsModal()">+ 부품 추가</button>
+      </div>
+      <div id="parts-table">
+        <div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
       </div>
     </div>
-    <div id="parts-table">
-      <div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
+    <!-- 하단: 상세 / 신규 등록 -->
+    <div class="card" id="parts-detail-card">
+      <div class="card-header">
+        <div class="card-title" id="parts-detail-title">📝 신규 Part 등록</div>
+      </div>
+      <div id="parts-detail-body" class="card-body" style="padding:20px"></div>
     </div>
   </div>`;
   loadPartsTable();
+  renderPartForm(null);
 }
 
 let _partsData = [];
@@ -1590,9 +1619,12 @@ function renderPartsRows(rows) {
       <th style="text-align:right">원가(₩)</th><th>카테고리</th><th>상태</th><th></th>
     </tr></thead>
     <tbody>
-      ${pg.rows.map(r => `
-      <tr>
-        <td class="td-mono">${r['PartNo']||''}</td>
+      ${pg.rows.map(r => {
+        const isSel = _selectedPart?.['PartNo'] === r['PartNo'];
+        return `
+      <tr id="part-row-${r['PartNo']}" onclick="selectPart(${JSON.stringify(r).replace(/"/g,'&quot;')})"
+          style="cursor:pointer;${isSel?'background:var(--accent-soft);outline:2px solid var(--accent);outline-offset:-2px':''}">
+        <td class="td-mono" style="color:var(--accent)">${r['PartNo']||''}</td>
         <td><strong>${r['품명']||''}</strong></td>
         <td class="td-muted">${r['모델명']||''}</td>
         <td class="td-muted">${r['제조사']||''}</td>
@@ -1610,14 +1642,11 @@ function renderPartsRows(rows) {
         </td>
         <td>${r['카테고리'] ? `<span class="badge badge-blue">${r['카테고리']}</span>` : ''}</td>
         <td>${badgeYN(r['사용여부'])}</td>
-        <td>
-          <div class="flex gap-2">
-            <button class="btn btn-secondary btn-sm" onclick='openPartsModal(${JSON.stringify(r)})'>수정</button>
-            <button class="btn btn-danger btn-sm" onclick="deletePartById(this)"
-              data-id="${r['PartNo']}" data-label="${r['품명']||r['PartNo']}">삭제</button>
-          </div>
+        <td onclick="event.stopPropagation()">
+          <button class="btn btn-danger btn-sm" onclick="deletePartById(this)"
+            data-id="${r['PartNo']}" data-label="${r['품명']||r['PartNo']}">삭제</button>
         </td>
-      </tr>`).join('')}
+      </tr>`;}).join('')}
     </tbody>
   </table></div>
   ${renderPageBar(pg.total, pg.page, pg.pages, PAGE_SIZE, 'goPartsPage')}`;
@@ -1625,147 +1654,217 @@ function renderPartsRows(rows) {
 
 function goPartsPage(p) { _partsPage = p; renderPartsRows(_partsDisplayRows); }
 
-function openPartsModal(data = null) {
-  const isEdit = !!data;
-  const d = data || {};
-  const vendorOpts = (CACHE.vendor || [])
-    .map(v => `<option value="${v['ID']}" data-name="${v['회사명']}" ${d['공급사ID']===v['ID']?'selected':''}>${v['회사명']}</option>`)
+// ════════════════════════════════════════════════════════
+// Parts 상세 폼 (목록·상세 분리 레이아웃)
+// ════════════════════════════════════════════════════════
+
+function renderPartForm(d) {
+  const bodyEl = document.getElementById('parts-detail-body');
+  if (!bodyEl) return;
+  const isEdit = !!(d?.['PartNo']);
+  const esc = v => String(v||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+
+  const vendorOpts = (CACHE.vendor||[])
+    .map(v => `<option value="${v['ID']}" data-name="${esc(v['회사명'])}" ${d?.['공급사ID']===v['ID']?'selected':''}>${v['회사명']}</option>`)
     .join('');
-  const currOpts = (CACHE.currency || [])
-    .map(c => `<option value="${c['통화코드']}" ${(d['통화']||'KRW')===c['통화코드']?'selected':''}>${c['통화코드']} - ${c['통화명']}</option>`)
+  const unitOpts = (CACHE.unit||[])
+    .map(u => `<option value="${u['단위코드']}" ${d?.['단위']===u['단위코드']?'selected':''}>${u['단위코드']}</option>`)
+    .join('');
+  const currOpts = (CACHE.currency||[])
+    .map(u => `<option value="${u['통화코드']}" ${(d?.['통화']||'KRW')===u['통화코드']?'selected':''}>${u['통화코드']}</option>`)
+    .join('');
+  const catOpts = (CACHE.category||[]).filter(c=>['공통','Parts'].includes(c['적용대상']||''))
+    .map(c => `<option value="${c['카테고리명']}" ${d?.['카테고리']===c['카테고리명']?'selected':''}>${c['카테고리명']}</option>`)
     .join('');
 
-  showModal({
-    title: isEdit ? `부품 수정 — ${d['PartNo']}` : '부품 추가',
-    size: 'lg',
-    body: `
-      <div class="form-grid form-grid-2">
-        <div class="form-group">
-          <label class="form-label">품명 <span class="req">*</span></label>
-          <input class="form-input" id="f-pname" value="${d['품명']||''}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">모델명</label>
-          <input class="form-input" id="f-model" value="${d['모델명']||''}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">제조사</label>
-          <input class="form-input" id="f-maker" value="${d['제조사']||''}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">공급사</label>
-          <select class="form-select" id="f-vendor" onchange="syncVendorName('f-vendor','f-vname')">
-            <option value="">-- 선택 --</option>
-            ${vendorOpts}
-          </select>
-          <input type="hidden" id="f-vname" value="${d['공급사명']||''}">
-        </div>
-        <div class="form-group" style="grid-column:1/-1">
-          <label class="form-label">규격/사양</label>
-          <input class="form-input" id="f-spec" value="${d['규격사양']||''}" placeholder="크기, 재질, 전압 등">
-        </div>
-        <div class="form-group">
-          <label class="form-label">단위</label>
-          <select class="form-select" id="f-unit">
-            ${buildUnitOpts('Parts', d['단위']||'')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">카테고리</label>
-          <select class="form-select" id="f-cat">
-            ${buildCatOpts('Parts', d['카테고리']||'')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">표준단가</label>
-          <input class="form-input" type="number" id="f-price" value="${d['표준단가']||''}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">통화</label>
-          <select class="form-select" id="f-currency">${currOpts}</select>
-        </div>
-        <div class="form-group" style="grid-column:1/-1">
-          <label class="form-label">비고</label>
-          <textarea class="form-textarea" id="f-note" style="min-height:60px">${d['비고']||''}</textarea>
-        </div>
-        ${isEdit ? `
-        <div class="form-group">
-          <label class="form-label">사용여부</label>
-          <select class="form-select" id="f-use">
-            <option value="Y" ${d['사용여부']==='Y'?'selected':''}>사용</option>
-            <option value="N" ${d['사용여부']==='N'?'selected':''}>미사용</option>
-          </select>
-        <div class="form-group" style="grid-column:1/-1">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-            <label class="form-label" style="margin:0">📁 연결된 외부 견적서 (원가 참고)</label>
-            <button class="btn btn-secondary btn-sm"
-              onclick="navigate('ext-quotations');closeModal()">견적서 관리</button>
-          </div>
-          <div id="parts-linked-quots">
-            <div class="spinner" style="width:18px;height:18px;margin:8px 0"></div>
-          </div>
-        </div>
-        </div>` : ''}
-      </div>`,
-    onConfirm: async () => {
-      const vendorSel = document.getElementById('f-vendor');
-      const vendorName = vendorSel.selectedIndex > 0
-        ? vendorSel.options[vendorSel.selectedIndex].getAttribute('data-name') : '';
-      const row = {
-        '품명': val('f-pname'), '모델명': val('f-model'),
-        '제조사': val('f-maker'), '공급사ID': val('f-vendor'),
-        '공급사명': vendorName, '규격사양': val('f-spec'),
-        '단위': val('f-unit'), '카테고리': val('f-cat'),
-        '표준단가': val('f-price'), '통화': val('f-currency'),
-        '비고': val('f-note'),
-        '사용여부': isEdit ? val('f-use') : 'Y',
-      };
-      if (!row['품명']) { showToast('품명을 입력하세요', 'error'); return false; }
-      if (isEdit) {
-        row['PartNo'] = d['PartNo'];
-        await api({ action: 'updatePart', id: d['PartNo'], row });
-        showToast('부품 정보가 수정되었습니다');
-      } else {
-        await api({ action: 'addPart', row });
-        showToast('부품이 추가되었습니다');
-      }
-      await refreshCache('parts');
-      pcDel('master-parts');
-      loadPartsTable();
-    }
-  });
-  // 수정 모드에서는 연결된 외부 견적서 로드
-  if (isEdit && d['PartNo']) {
-    setTimeout(async () => {
-      const el = document.getElementById('parts-linked-quots');
-      if (!el) return;
-      el.innerHTML = await renderLinkedQuotsSection('Parts', d['PartNo']);
-    }, 100);
+  bodyEl.innerHTML = `
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label class="form-label">Part No.</label>
+        <input class="form-input" id="pd-partno" value="${esc(d?.['PartNo']||'')}"
+               placeholder="저장 시 자동 채번" ${isEdit?'readonly style="background:var(--bg2);color:var(--text3)"':''}>
+      </div>
+      <div class="form-group">
+        <label class="form-label required">품명</label>
+        <input class="form-input" id="pd-name" value="${esc(d?.['품명']||'')}" placeholder="품명 입력">
+      </div>
+      <div class="form-group">
+        <label class="form-label">모델명</label>
+        <input class="form-input" id="pd-model" value="${esc(d?.['모델명']||'')}" placeholder="모델명">
+      </div>
+      <div class="form-group">
+        <label class="form-label">제조사</label>
+        <input class="form-input" id="pd-maker" value="${esc(d?.['제조사']||'')}" placeholder="제조사">
+      </div>
+      <div class="form-group">
+        <label class="form-label">공급사</label>
+        <select class="form-select" id="pd-vendor">
+          <option value="">-- 선택 --</option>${vendorOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">규격사양</label>
+        <input class="form-input" id="pd-spec" value="${esc(d?.['규격사양']||'')}" placeholder="규격사양">
+      </div>
+      <div class="form-group">
+        <label class="form-label">단위</label>
+        <select class="form-select" id="pd-unit">
+          <option value="">-- 선택 --</option>${unitOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">표준단가</label>
+        <input class="form-input" type="number" id="pd-price" value="${d?.['표준단가']||''}" placeholder="0">
+      </div>
+      <div class="form-group">
+        <label class="form-label">통화</label>
+        <select class="form-select" id="pd-curr">${currOpts}</select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">카테고리</label>
+        <select class="form-select" id="pd-cat">
+          <option value="">-- 선택 --</option>${catOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">비고</label>
+        <input class="form-input" id="pd-note" value="${esc(d?.['비고']||'')}" placeholder="메모">
+      </div>
+      <div class="form-group">
+        <label class="form-label">사용여부</label>
+        <select class="form-select" id="pd-use">
+          <option value="Y" ${!isEdit||d?.['사용여부']==='Y'?'selected':''}>사용</option>
+          <option value="N" ${d?.['사용여부']==='N'?'selected':''}>미사용</option>
+        </select>
+      </div>
+    </div>
+
+    ${isEdit ? `
+    <div style="margin-top:16px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r)">
+      <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">📁 연결된 외부 견적서 (원가 참고)</div>
+      <div id="pd-linked-quots"><div class="spinner" style="width:16px;height:16px;margin:6px 0"></div></div>
+    </div>` : ''}
+
+    <div class="flex gap-2" style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+      <button class="btn btn-success" id="pd-save-btn" onclick="savePartDetail()">
+        ${isEdit ? '💾 수정 저장' : '➕ 등록'}
+      </button>
+      ${isEdit ? `
+      <button class="btn btn-danger" onclick="deletePartDetail('${esc(d['PartNo'])}','${esc(d['품명']||'')}')">🗑 삭제</button>
+      <button class="btn btn-secondary" onclick="selectPart(null)">✕ 취소</button>` : ''}
+    </div>`;
+
+  if (isEdit && d?.['PartNo']) {
+    renderLinkedQuotsSection('Parts', d['PartNo']).then(html => {
+      const lqEl = document.getElementById('pd-linked-quots');
+      if (lqEl) lqEl.innerHTML = html;
+    }).catch(() => {});
   }
 }
+
+function selectPart(rowData) {
+  _selectedPart = rowData;
+  const titleEl = document.getElementById('parts-detail-title');
+  if (titleEl) titleEl.textContent = rowData ? `✏️ Part 수정 — ${rowData['PartNo']}` : '📝 신규 Part 등록';
+
+  // 행 하이라이트 업데이트
+  document.querySelectorAll('[id^="part-row-"]').forEach(tr => {
+    tr.style.background = '';
+    tr.style.outline = '';
+  });
+  if (rowData?.['PartNo']) {
+    const tr = document.getElementById(`part-row-${rowData['PartNo']}`);
+    if (tr) { tr.style.background = 'var(--accent-soft)'; tr.style.outline = '2px solid var(--accent)'; tr.style.outlineOffset = '-2px'; }
+  }
+
+  renderPartForm(rowData);
+  setTimeout(() => document.getElementById('parts-detail-card')?.scrollIntoView({ behavior:'smooth', block:'nearest' }), 60);
+}
+
+async function savePartDetail() {
+  const name = val('pd-name');
+  if (!name) { showToast('품명을 입력하세요', 'error'); return; }
+  const vendorSel  = document.getElementById('pd-vendor');
+  const vendorName = vendorSel?.selectedIndex > 0
+    ? vendorSel.options[vendorSel.selectedIndex].getAttribute('data-name') : '';
+  const row = {
+    '품명': name, '모델명': val('pd-model'), '제조사': val('pd-maker'),
+    '공급사ID': val('pd-vendor'), '공급사명': vendorName,
+    '규격사양': val('pd-spec'),  '단위': val('pd-unit'),
+    '표준단가': val('pd-price'), '통화': val('pd-curr') || 'KRW',
+    '카테고리': val('pd-cat'),   '비고': val('pd-note'),
+    '사용여부': val('pd-use'),
+  };
+  const btn = document.getElementById('pd-save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '저장 중...'; }
+  showOverlay();
+  try {
+    if (_selectedPart) {
+      await api({ action:'updatePart', id:_selectedPart['PartNo'], row });
+      showToast('수정되었습니다');
+    } else {
+      await api({ action:'addPart', row });
+      showToast('등록되었습니다');
+      selectPart(null);
+    }
+    pcDel('master-parts');
+    await refreshCache('parts');
+    loadPartsTable();
+  } catch(e) { showToast('저장 실패: ' + e.message, 'error');
+  } finally {
+    hideOverlay();
+    if (btn) { btn.disabled = false; btn.textContent = _selectedPart ? '💾 수정 저장' : '➕ 등록'; }
+  }
+}
+
+async function deletePartDetail(partNo, name) {
+  if (!confirm(`"${name}" 을(를) 삭제하시겠습니까?`)) return;
+  try {
+    await api({ action:'deletePart', id:partNo });
+    showToast('삭제되었습니다');
+    _selectedPart = null;
+    pcDel('master-parts');
+    selectPart(null);
+    await refreshCache('parts');
+    loadPartsTable();
+  } catch(e) { showToast('삭제 실패: ' + e.message, 'error'); }
+}
+
+function openPartsModal(data = null) { selectPart(data); }  // 레거시 호환
+
 
 // ═══════════════════════════════════════════════════════
 // MASTER DB - EQUIPMENT
 // ═══════════════════════════════════════════════════════
 async function renderMasterEquip(el) {
+  _selectedEquip = null;
   el.innerHTML = `
-  <div class="card">
-    <div class="card-header">
-      <div class="card-title">⚙️ Equipment 목록</div>
-      <div class="flex gap-2">
-        <div class="search-input-wrap">
-          <span class="search-icon">🔍</span>
-          <input class="search-input" id="equip-search" placeholder="장비명, 모델명, 제조사 검색..."
-                 oninput="filterEquipTable(this.value)">
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">⚙️ Equipment 목록</div>
+        <div class="flex gap-2">
+          <div class="search-input-wrap">
+            <span class="search-icon">🔍</span>
+            <input class="search-input" id="equip-search" placeholder="장비번호, 장비명, 모델명 검색..."
+                   oninput="filterEquipTable(this.value)">
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="selectEquip(null)">+ 신규 등록</button>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="openEquipModal()">+ 장비 추가</button>
+      </div>
+      <div id="equip-table">
+        <div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
       </div>
     </div>
-    <div id="equip-table">
-      <div style="padding:40px;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
+    <div class="card" id="equip-detail-card">
+      <div class="card-header">
+        <div class="card-title" id="equip-detail-title">📝 신규 Equipment 등록</div>
+      </div>
+      <div id="equip-detail-body" class="card-body" style="padding:20px"></div>
     </div>
   </div>`;
   loadEquipTable();
+  renderEquipForm(null);
 }
 
 let _equipData = [];
@@ -1811,9 +1910,12 @@ function renderEquipRows(rows) {
       <th style="text-align:right">원가(₩)</th><th>상태</th><th></th>
     </tr></thead>
     <tbody>
-      ${pg.rows.map(r => `
-      <tr>
-        <td class="td-mono">${r['EquipNo']||''}</td>
+      ${pg.rows.map(r => {
+        const isSel = _selectedEquip?.['EquipNo'] === r['EquipNo'];
+        return `
+      <tr id="equip-row-${r['EquipNo']}" onclick="selectEquip(${JSON.stringify(r).replace(/"/g,'&quot;')})"
+          style="cursor:pointer;${isSel?'background:var(--accent-soft);outline:2px solid var(--accent);outline-offset:-2px':''}">
+        <td class="td-mono" style="color:var(--accent)">${r['EquipNo']||''}</td>
         <td><strong>${r['장비명']||''}</strong></td>
         <td class="td-muted">${r['모델명']||''}</td>
         <td class="td-muted">${r['제조사']||''}</td>
@@ -1830,14 +1932,11 @@ function renderEquipRows(rows) {
             : '<span style="color:var(--text3)">—</span>'}
         </td>
         <td>${badgeYN(r['사용여부'])}</td>
-        <td>
-          <div class="flex gap-2">
-            <button class="btn btn-secondary btn-sm" onclick='openEquipModal(${JSON.stringify(r)})'>수정</button>
-            <button class="btn btn-danger btn-sm" onclick="deleteEquipById(this)"
-                    data-id="${r['EquipNo']}" data-label="${r['장비명']||r['EquipNo']}">삭제</button>
-          </div>
+        <td onclick="event.stopPropagation()">
+          <button class="btn btn-danger btn-sm" onclick="deleteEquipById(this)"
+                  data-id="${r['EquipNo']}" data-label="${r['장비명']||r['EquipNo']}">삭제</button>
         </td>
-      </tr>`).join('')}
+      </tr>`;}).join('')}
     </tbody>
   </table></div>
   ${renderPageBar(pg.total, pg.page, pg.pages, PAGE_SIZE, 'goEquipPage')}`;
@@ -1845,127 +1944,186 @@ function renderEquipRows(rows) {
 
 function goEquipPage(p) { _equipPage = p; renderEquipRows(_equipDisplayRows); }
 
-function openEquipModal(data = null) {
-  const isEdit = !!data;
-  const d = data || {};
-  const vendorOpts = (CACHE.vendor || [])
-    .map(v => `<option value="${v['ID']}" data-name="${v['회사명']}" ${d['공급사ID']===v['ID']?'selected':''}>${v['회사명']}</option>`)
+// ════════════════════════════════════════════════════════
+// Equipment 상세 폼
+// ════════════════════════════════════════════════════════
+
+function renderEquipForm(d) {
+  const bodyEl = document.getElementById('equip-detail-body');
+  if (!bodyEl) return;
+  const isEdit = !!(d?.['EquipNo']);
+  const esc = v => String(v||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+
+  const vendorOpts = (CACHE.vendor||[])
+    .map(v => `<option value="${v['ID']}" data-name="${esc(v['회사명'])}" ${d?.['공급사ID']===v['ID']?'selected':''}>${v['회사명']}</option>`)
     .join('');
-  const currOpts = (CACHE.currency || [])
-    .map(c => `<option value="${c['통화코드']}" ${(d['통화']||'KRW')===c['통화코드']?'selected':''}>${c['통화코드']} - ${c['통화명']}</option>`)
+  const unitOpts = (CACHE.unit||[])
+    .map(u => `<option value="${u['단위코드']}" ${d?.['단위']===u['단위코드']?'selected':''}>${u['단위코드']}</option>`)
+    .join('');
+  const currOpts = (CACHE.currency||[])
+    .map(u => `<option value="${u['통화코드']}" ${(d?.['통화']||'KRW')===u['통화코드']?'selected':''}>${u['통화코드']}</option>`)
+    .join('');
+  const catOpts = (CACHE.category||[]).filter(c=>['공통','Equipment'].includes(c['적용대상']||''))
+    .map(c => `<option value="${c['카테고리명']}" ${d?.['카테고리']===c['카테고리명']?'selected':''}>${c['카테고리명']}</option>`)
     .join('');
 
-  showModal({
-    title: isEdit ? `장비 수정 — ${d['EquipNo']}` : '장비 추가',
-    size: 'lg',
-    body: `
-      <div class="form-grid form-grid-2">
-        <div class="form-group">
-          <label class="form-label">장비명 <span class="req">*</span></label>
-          <input class="form-input" id="f-ename" value="${d['장비명']||''}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">모델명</label>
-          <input class="form-input" id="f-model" value="${d['모델명']||''}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">제조사</label>
-          <input class="form-input" id="f-maker" value="${d['제조사']||''}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">공급사</label>
-          <select class="form-select" id="f-vendor">
-            <option value="">-- 선택 --</option>
-            ${vendorOpts}
-          </select>
-        </div>
-        <div class="form-group" style="grid-column:1/-1">
-          <label class="form-label">규격/사양</label>
-          <input class="form-input" id="f-spec" value="${d['규격사양']||''}">
-        </div>
-        <div class="form-group" style="grid-column:1/-1">
-          <label class="form-label">용도/설치위치</label>
-          <input class="form-input" id="f-loc" value="${d['용도설치위치']||''}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">단위</label>
-          <select class="form-select" id="f-unit">
-            ${buildUnitOpts('Equipment', d['단위']||'')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">카테고리</label>
-          <select class="form-select" id="f-cat">
-            ${buildCatOpts('Equipment', d['카테고리']||'')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">표준단가</label>
-          <input class="form-input" type="number" id="f-price" value="${d['표준단가']||''}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">통화</label>
-          <select class="form-select" id="f-currency">${currOpts}</select>
-        </div>
-        <div class="form-group" style="grid-column:1/-1">
-          <label class="form-label">비고</label>
-          <textarea class="form-textarea" id="f-note" style="min-height:60px">${d['비고']||''}</textarea>
-        </div>
-        ${isEdit ? `
-        <div class="form-group">
-          <label class="form-label">사용여부</label>
-          <select class="form-select" id="f-use">
-            <option value="Y" ${d['사용여부']==='Y'?'selected':''}>사용</option>
-            <option value="N" ${d['사용여부']==='N'?'selected':''}>미사용</option>
-          </select>
-        </div>
-        <div class="form-group" style="grid-column:1/-1">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-            <label class="form-label" style="margin:0">📁 연결된 외부 견적서 (원가 참고)</label>
-            <button class="btn btn-secondary btn-sm"
-              onclick="navigate('ext-quotations');closeModal()">견적서 관리</button>
-          </div>
-          <div id="equip-linked-quots">
-            <div class="spinner" style="width:18px;height:18px;margin:8px 0"></div>
-          </div>
-        </div>` : ''}
-      </div>`,
-    onConfirm: async () => {
-      const vendorSel = document.getElementById('f-vendor');
-      const vendorName = vendorSel.selectedIndex > 0
-        ? vendorSel.options[vendorSel.selectedIndex].getAttribute('data-name') : '';
-      const row = {
-        '장비명': val('f-ename'), '모델명': val('f-model'),
-        '제조사': val('f-maker'), '공급사ID': val('f-vendor'),
-        '공급사명': vendorName, '규격사양': val('f-spec'),
-        '용도설치위치': val('f-loc'), '단위': val('f-unit'),
-        '카테고리': val('f-cat'), '표준단가': val('f-price'),
-        '통화': val('f-currency'), '비고': val('f-note'),
-        '사용여부': isEdit ? val('f-use') : 'Y',
-      };
-      if (!row['장비명']) { showToast('장비명을 입력하세요', 'error'); return false; }
-      if (isEdit) {
-        row['EquipNo'] = d['EquipNo'];
-        await api({ action: 'updateEquip', id: d['EquipNo'], row });
-        showToast('장비 정보가 수정되었습니다');
-      } else {
-        await api({ action: 'addEquipment', row });
-        showToast('장비가 추가되었습니다');
-      }
-      await refreshCache('equipment');
-      pcDel('master-equipment');
-      loadEquipTable();
-    }
-  });
-  // 수정 모드에서는 연결된 외부 견적서 로드
-  if (isEdit && d['EquipNo']) {
-    setTimeout(async () => {
-      const el = document.getElementById('equip-linked-quots');
-      if (!el) return;
-      el.innerHTML = await renderLinkedQuotsSection('Equipment', d['EquipNo']);
-    }, 100);
+  bodyEl.innerHTML = `
+    <div class="form-grid-2">
+      <div class="form-group">
+        <label class="form-label">Equip No.</label>
+        <input class="form-input" id="ed-equipno" value="${esc(d?.['EquipNo']||'')}"
+               placeholder="저장 시 자동 채번" ${isEdit?'readonly style="background:var(--bg2);color:var(--text3)"':''}>
+      </div>
+      <div class="form-group">
+        <label class="form-label required">장비명</label>
+        <input class="form-input" id="ed-name" value="${esc(d?.['장비명']||'')}" placeholder="장비명 입력">
+      </div>
+      <div class="form-group">
+        <label class="form-label">모델명</label>
+        <input class="form-input" id="ed-model" value="${esc(d?.['모델명']||'')}" placeholder="모델명">
+      </div>
+      <div class="form-group">
+        <label class="form-label">제조사</label>
+        <input class="form-input" id="ed-maker" value="${esc(d?.['제조사']||'')}" placeholder="제조사">
+      </div>
+      <div class="form-group">
+        <label class="form-label">공급사</label>
+        <select class="form-select" id="ed-vendor">
+          <option value="">-- 선택 --</option>${vendorOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">규격사양</label>
+        <input class="form-input" id="ed-spec" value="${esc(d?.['규격사양']||'')}" placeholder="규격사양">
+      </div>
+      <div class="form-group">
+        <label class="form-label">용도/설치위치</label>
+        <input class="form-input" id="ed-loc" value="${esc(d?.['용도설치위치']||'')}" placeholder="용도·설치위치">
+      </div>
+      <div class="form-group">
+        <label class="form-label">단위</label>
+        <select class="form-select" id="ed-unit">
+          <option value="">-- 선택 --</option>${unitOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">표준단가</label>
+        <input class="form-input" type="number" id="ed-price" value="${d?.['표준단가']||''}" placeholder="0">
+      </div>
+      <div class="form-group">
+        <label class="form-label">통화</label>
+        <select class="form-select" id="ed-curr">${currOpts}</select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">카테고리</label>
+        <select class="form-select" id="ed-cat">
+          <option value="">-- 선택 --</option>${catOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">비고</label>
+        <input class="form-input" id="ed-note" value="${esc(d?.['비고']||'')}" placeholder="메모">
+      </div>
+      <div class="form-group">
+        <label class="form-label">사용여부</label>
+        <select class="form-select" id="ed-use">
+          <option value="Y" ${!isEdit||d?.['사용여부']==='Y'?'selected':''}>사용</option>
+          <option value="N" ${d?.['사용여부']==='N'?'selected':''}>미사용</option>
+        </select>
+      </div>
+    </div>
+
+    ${isEdit ? `
+    <div style="margin-top:16px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r)">
+      <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">📁 연결된 외부 견적서 (원가 참고)</div>
+      <div id="ed-linked-quots"><div class="spinner" style="width:16px;height:16px;margin:6px 0"></div></div>
+    </div>` : ''}
+
+    <div class="flex gap-2" style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+      <button class="btn btn-success" id="ed-save-btn" onclick="saveEquipDetail()">
+        ${isEdit ? '💾 수정 저장' : '➕ 등록'}
+      </button>
+      ${isEdit ? `
+      <button class="btn btn-danger" onclick="deleteEquipDetail('${esc(d['EquipNo'])}','${esc(d['장비명']||'')}')">🗑 삭제</button>
+      <button class="btn btn-secondary" onclick="selectEquip(null)">✕ 취소</button>` : ''}
+    </div>`;
+
+  if (isEdit && d?.['EquipNo']) {
+    renderLinkedQuotsSection('Equipment', d['EquipNo']).then(html => {
+      const lqEl = document.getElementById('ed-linked-quots');
+      if (lqEl) lqEl.innerHTML = html;
+    }).catch(() => {});
   }
 }
+
+function selectEquip(rowData) {
+  _selectedEquip = rowData;
+  const titleEl = document.getElementById('equip-detail-title');
+  if (titleEl) titleEl.textContent = rowData ? `✏️ Equipment 수정 — ${rowData['EquipNo']}` : '📝 신규 Equipment 등록';
+
+  document.querySelectorAll('[id^="equip-row-"]').forEach(tr => {
+    tr.style.background = ''; tr.style.outline = '';
+  });
+  if (rowData?.['EquipNo']) {
+    const tr = document.getElementById(`equip-row-${rowData['EquipNo']}`);
+    if (tr) { tr.style.background = 'var(--accent-soft)'; tr.style.outline = '2px solid var(--accent)'; tr.style.outlineOffset = '-2px'; }
+  }
+
+  renderEquipForm(rowData);
+  setTimeout(() => document.getElementById('equip-detail-card')?.scrollIntoView({ behavior:'smooth', block:'nearest' }), 60);
+}
+
+async function saveEquipDetail() {
+  const name = val('ed-name');
+  if (!name) { showToast('장비명을 입력하세요', 'error'); return; }
+  const vendorSel  = document.getElementById('ed-vendor');
+  const vendorName = vendorSel?.selectedIndex > 0
+    ? vendorSel.options[vendorSel.selectedIndex].getAttribute('data-name') : '';
+  const row = {
+    '장비명': name,   '모델명': val('ed-model'),    '제조사': val('ed-maker'),
+    '공급사ID': val('ed-vendor'), '공급사명': vendorName,
+    '규격사양': val('ed-spec'),   '용도설치위치': val('ed-loc'),
+    '단위': val('ed-unit'),       '표준단가': val('ed-price'),
+    '통화': val('ed-curr')||'KRW','카테고리': val('ed-cat'),
+    '비고': val('ed-note'),       '사용여부': val('ed-use'),
+  };
+  const btn = document.getElementById('ed-save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '저장 중...'; }
+  showOverlay();
+  try {
+    if (_selectedEquip) {
+      await api({ action:'updateEquip', id:_selectedEquip['EquipNo'], row });
+      showToast('수정되었습니다');
+    } else {
+      await api({ action:'addEquipment', row });
+      showToast('등록되었습니다');
+      selectEquip(null);
+    }
+    pcDel('master-equipment');
+    await refreshCache('equipment');
+    loadEquipTable();
+  } catch(e) { showToast('저장 실패: ' + e.message, 'error');
+  } finally {
+    hideOverlay();
+    if (btn) { btn.disabled = false; btn.textContent = _selectedEquip ? '💾 수정 저장' : '➕ 등록'; }
+  }
+}
+
+async function deleteEquipDetail(equipNo, name) {
+  if (!confirm(`"${name}" 을(를) 삭제하시겠습니까?`)) return;
+  try {
+    await api({ action:'deleteEquip', id:equipNo });
+    showToast('삭제되었습니다');
+    _selectedEquip = null;
+    pcDel('master-equipment');
+    selectEquip(null);
+    await refreshCache('equipment');
+    loadEquipTable();
+  } catch(e) { showToast('삭제 실패: ' + e.message, 'error'); }
+}
+
+function openEquipModal(data = null) { selectEquip(data); }  // 레거시 호환
+
 
 // ═══════════════════════════════════════════════════════
 // 견적 등록 (좌: 고객용 견적서 / 우: 내부 세부내역 + 연결 도구)
@@ -3740,6 +3898,8 @@ function renderQuotPage() {
           <td>
             <div class="flex gap-2">
               <button class="btn btn-secondary btn-sm" onclick="openQuotDetail('${r['QuotNo']}')">상세</button>
+              <button class="btn btn-success btn-sm" onclick="openConfirmQuotModal('${r['QuotNo']}')"
+                      ${r['상태']==='확정'?'disabled title="이미 확정됨"':''}>확정</button>
               <button class="btn btn-danger btn-sm" onclick="deleteQuot('${r['QuotNo']}')">삭제</button>
             </div>
           </td>
@@ -3750,6 +3910,85 @@ function renderQuotPage() {
 }
 
 function goQuotPage(p) { _quotPage = p; renderQuotPage(); }
+
+// ── 견적 확정 → 판매 자동 등록 ──────────────────────────────
+async function openConfirmQuotModal(quotNo) {
+  showOverlay();
+  let detail;
+  try {
+    detail = await api({ action:'getQuotDetail', quotNo });
+    if (!detail.ok) { showToast('견적 상세 로드 실패','error'); return; }
+  } catch(e) { showToast('로드 오류: '+e.message,'error'); return;
+  } finally { hideOverlay(); }
+
+  const h = detail.header;
+  const detailLines = (detail.lines||[]).filter(l => l['_type']==='detail' && l['품명']);
+  const today = new Date().toISOString().slice(0,10);
+  const totalAmt = detailLines.reduce((s,l) =>
+    s + (parseFloat(String(l['견적가']||'0').replace(/,/g,''))||0), 0);
+
+  showModal({
+    title: `📋 견적 확정 → 판매 등록 — ${quotNo}`,
+    body: `
+      <div style="background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--r);
+                  padding:10px 14px;margin-bottom:16px;font-size:12px;color:var(--text2)">
+        확정 시 <b>판매 목록</b>에 자동 등록됩니다. 견적서 기록은 유지됩니다.
+      </div>
+      <div class="form-grid-2">
+        <div class="form-group">
+          <label class="form-label required">거래처명 (고객사)</label>
+          <input class="form-input" id="cq-customer" value="${h['프로젝트명']||''}" placeholder="거래처명 입력">
+        </div>
+        <div class="form-group">
+          <label class="form-label required">거래일</label>
+          <input class="form-input" type="date" id="cq-date" value="${today}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">담당자</label>
+          <select class="form-select" id="cq-staff">
+            <option value="">-- 선택 --</option>
+            ${(CACHE.staff||[]).map(s=>`<option value="${s['ID']}" data-name="${s['이름']||''}" ${s['ID']===h['담당자ID']?'selected':''}>${s['이름']}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">발주번호</label>
+          <input class="form-input" id="cq-po" placeholder="고객 발주번호 (선택)">
+        </div>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r);
+                  padding:12px 14px;font-size:12px;color:var(--text2)">
+        <div style="font-weight:600;color:var(--text);margin-bottom:6px">견적 요약</div>
+        <div>공급사: <b>${h['공급사명']||'—'}</b> &nbsp;|&nbsp; 프로젝트: <b>${h['프로젝트명']||'—'}</b></div>
+        <div>상세 품목: <b>${detailLines.length}건</b> &nbsp;|&nbsp; 합계: <b>₩${totalAmt.toLocaleString()}</b></div>
+      </div>`,
+    onConfirm: async () => {
+      const customer = val('cq-customer');
+      if (!customer) { showToast('거래처명을 입력하세요','error'); return false; }
+      const staffSel  = document.getElementById('cq-staff');
+      const staffName = staffSel?.selectedIndex > 0
+        ? staffSel.options[staffSel.selectedIndex].getAttribute('data-name') : '';
+      const r = await api({
+        action:     'confirmQuotation',
+        quotNo,
+        saleHeader: {
+          거래처명:   customer,
+          거래처ID:   '',
+          거래일:     val('cq-date'),
+          프로젝트ID: h['프로젝트ID']  || '',
+          프로젝트명: h['프로젝트명']  || '',
+          담당자ID:   val('cq-staff'),
+          담당자명:   staffName,
+          발주번호:   val('cq-po'),
+          비고:       `견적 ${quotNo} 자동 확정`,
+        }
+      });
+      if (!r.ok) { showToast(r.error||'확정 실패','error'); return false; }
+      showToast(`${quotNo} 확정 완료 — 판매 목록에 등록되었습니다`, 'success');
+      pcDel('list-quotation','list-sales','dashboard');
+      navigate('list-sales');
+    }
+  });
+}
 
 async function openQuotDetail(quotNo) {
   try {
