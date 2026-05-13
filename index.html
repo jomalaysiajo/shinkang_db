@@ -1107,7 +1107,18 @@ body.col-resizing { cursor: col-resize; user-select: none; }
       <p>업무 데이터베이스 시스템</p>
     </div>
 
-    <label class="login-label" for="login-pw">접속 비밀번호</label>
+    <label class="login-label" for="login-id">아이디</label>
+    <input
+      type="text"
+      id="login-id"
+      class="login-input"
+      placeholder="아이디를 입력하세요"
+      autocomplete="username"
+      onkeydown="if(event.key==='Enter') document.getElementById('login-pw').focus()"
+      style="margin-bottom:10px"
+    >
+
+    <label class="login-label" for="login-pw">비밀번호</label>
     <input
       type="password"
       id="login-pw"
@@ -1119,10 +1130,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
     <div id="login-error"></div>
 
     <button class="login-btn" onclick="doLogin()">
-      접속
+      로그인
     </button>
 
-    <p class="login-hint">저장된 인증 정보가 있으면 자동으로 로그인됩니다</p>
+    <p class="login-hint" style="margin-top:12px;font-size:11px;color:rgba(255,255,255,.25)">
+      초기 관리자: 아이디 <b>admin</b> / 비밀번호 <b>1234</b>
+    </p>
   </div>
   <span class="login-version">v2.0 · 신강인테크</span>
 </div>
