@@ -234,13 +234,28 @@ async function doLogin() {
 function enterApp() {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.add('visible');
-  // 상단 사용자명 표시
   const s = getSession();
+
+  // 세션 상태 콘솔 출력 (디버깅용)
+  console.log('[enterApp] 세션:', { userId: s?.userId, displayName: s?.displayName, isAdmin: s?.isAdmin });
+
+  // topbar 사용자 배지 표시
   const dot = document.querySelector('.topbar-user-dot');
   if (dot) {
-    dot.title = (s?.displayName || '사용자') + (s?.isAdmin ? ' (관리자)' : '') + ' 로그인 중';
+    dot.title    = (s?.displayName || s?.userId || '?') + (s?.isAdmin ? ' (관리자)' : ' (일반)');
+    dot.textContent = s?.isAdmin ? '👑' : '👤';
+    dot.style.cursor = 'pointer';
+    dot.onclick = () => {
+      const msg = [
+        `아이디: ${s?.userId}`,
+        `이름: ${s?.displayName}`,
+        `역할: ${s?.isAdmin ? '관리자' : '일반 사용자'}`,
+        `staffId: ${s?.staffId || '없음'}`,
+      ].join('\n');
+      alert(msg);
+    };
   }
-  // 사이드바 권한 적용 (전체 초기화 포함)
+
   updateNavPermissions();
   loadCache();
   navigate('dashboard');
