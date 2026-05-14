@@ -237,6 +237,8 @@ function enterApp() {
   // 상단 사용자명 업데이트
   const dot = document.querySelector('.topbar-user-dot');
   if (dot) dot.title = getDisplayName() + ' 로그인 중';
+  // 사이드바 권한 적용
+  updateNavPermissions();
   loadCache();
   navigate('dashboard');
 }
@@ -494,7 +496,53 @@ const PAGE_META = {
   'ext-quotations':    { title: '외부 견적서',    sub: '파트너사 견적서 파일 관리' },
 };
 
+// ════════════════════════════════════════════════════════
+// 권한 — 페이지별 area 매핑
+// ════════════════════════════════════════════════════════
+const PAGE_PERM_MAP = {
+  'dashboard':         'dashboard',
+  'master-parts':      'parts',
+  'master-equipment':  'equip',
+  'list-quotation':    'quotation',
+  'reg-quotation':     'quotation',
+  'list-purchase':     'purchase',
+  'reg-purchase':      'purchase',
+  'list-sales':        'sales',
+  'ext-quotations':    'extquot',
+  'settings-staff':    'settings',
+  'settings-vendor':   'settings',
+  'settings-category': 'settings',
+  'settings-unit':     'settings',
+  'settings-currency': 'settings',
+  'settings-project':  'settings',
+  'settings-code':     'settings',
+};
+
+/** 사이드바 메뉴 + 하단 탭 — 권한 없는 항목 숨김 */
+function updateNavPermissions() {
+  const s = getSession();
+  if (!s || s.isAdmin) return;  // 관리자는 전부 표시
+
+  document.querySelectorAll('[onclick*="navigate("]').forEach(el => {
+    const m = (el.getAttribute('onclick') || '').match(/navigate\('([^']+)'\)/);
+    if (!m) return;
+    const area = PAGE_PERM_MAP[m[1]];
+    el.style.display = (area && !hasPermission(area, 'view')) ? 'none' : '';
+  });
+}
+
 function navigate(page) {
+  // ── 권한 가드 ────────────────────────────────────────────
+  const s = getSession();
+  if (s && !s.isAdmin) {
+    const area = PAGE_PERM_MAP[page];
+    if (area && !hasPermission(area, 'view')) {
+      showToast(`"${PAGE_META[page]?.title || page}" 메뉴에 대한 열람 권한이 없습니다`, 'error');
+      if (page !== 'dashboard') setTimeout(() => navigate('dashboard'), 0);
+      return;
+    }
+  }
+
   closeMobileSidebar();
 
   // 사이드바 활성화
@@ -750,8 +798,8 @@ async function loadStaffTable() {
           <td class="td-muted text-sm">${fmtDate(r['등록일'])}</td>
           <td>
             <div class="flex gap-2">
-              <button class="btn btn-secondary btn-sm" onclick='openStaffModal(${JSON.stringify(r)})'>수정</button>
-              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Staff","${r['ID']}","ID","${r['이름']||r['ID']}",loadStaffTable)'>삭제</button>
+              ${hasPermission('settings','edit') ? `<button class="btn btn-secondary btn-sm" onclick='openStaffModal(${JSON.stringify(r)})'>수정</button>` : ''}
+              ${hasPermission('settings','delete') ? `<button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Staff","${r['ID']}","ID","${r['이름']||r['ID']}",loadStaffTable)'>삭제</button>` : ''}
             </div>
           </td>
         </tr>`).join('')}
@@ -1002,7 +1050,7 @@ async function loadVendorTable() {
           <td>
             <div class="flex gap-2">
               <button class="btn btn-secondary btn-sm" onclick='openVendorModal(${JSON.stringify(r)})'>수정</button>
-              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Vendor","${r['ID']}","ID","${r['회사명']||r['ID']}",loadVendorTable)'>삭제</button>
+              ${hasPermission('settings','delete') ? `<button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Vendor","${r['ID']}","ID","${r['회사명']||r['ID']}",loadVendorTable)'>삭제</button>` : ''}
             </div>
           </td>
         </tr>`).join('')}
@@ -1102,7 +1150,7 @@ async function loadProjectTable() {
           <td>
             <div class="flex gap-2">
               <button class="btn btn-secondary btn-sm" onclick='openProjectModal(${JSON.stringify(r)})'>수정</button>
-              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Project","${r['ID']}","ID","${r['프로젝트명']||r['ID']}",loadProjectTable)'>삭제</button>
+              ${hasPermission('settings','delete') ? `<button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Project","${r['ID']}","ID","${r['프로젝트명']||r['ID']}",loadProjectTable)'>삭제</button>` : ''}
             </div>
           </td>
         </tr>`).join('')}
@@ -1187,7 +1235,7 @@ async function loadCurrencyTable() {
           <td>
             <div class="flex gap-2">
               <button class="btn btn-secondary btn-sm" onclick='openCurrencyModal(${JSON.stringify(r)})'>수정</button>
-              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Currency","${r['ID']}","ID","${r['통화코드']||r['ID']}",loadCurrencyTable)'>삭제</button>
+              ${hasPermission('settings','delete') ? `<button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Currency","${r['ID']}","ID","${r['통화코드']||r['ID']}",loadCurrencyTable)'>삭제</button>` : ''}
             </div>
           </td>
         </tr>`).join('')}
@@ -1255,7 +1303,7 @@ async function loadUnitTable() {
           <td>
             <div class="flex gap-2">
               <button class="btn btn-secondary btn-sm" onclick='openUnitModal(${JSON.stringify(r)})'>수정</button>
-              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Unit","${r['ID']}","ID","${r['단위코드']||r['ID']}",loadUnitTable)'>삭제</button>
+              ${hasPermission('settings','delete') ? `<button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Unit","${r['ID']}","ID","${r['단위코드']||r['ID']}",loadUnitTable)'>삭제</button>` : ''}
             </div>
           </td>
         </tr>`).join('')}
@@ -1332,7 +1380,7 @@ async function loadCategoryTable() {
           <td>
             <div class="flex gap-2">
               <button class="btn btn-secondary btn-sm" onclick='openCategoryModal(${JSON.stringify(r)})'>수정</button>
-              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Category","${r['ID']}","ID","${r['카테고리명']||r['ID']}",loadCategoryTable)'>삭제</button>
+              ${hasPermission('settings','delete') ? `<button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Category","${r['ID']}","ID","${r['카테고리명']||r['ID']}",loadCategoryTable)'>삭제</button>` : ''}
             </div>
           </td>
         </tr>`).join('')}
@@ -1409,7 +1457,7 @@ async function loadDivisionTable() {
           <td>
             <div class="flex gap-2">
               <button class="btn btn-secondary btn-sm" onclick='openDivisionModal(${JSON.stringify(r)})'>수정</button>
-              <button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Division","${r['ID']}","ID","${r['구분명']||r['ID']}",loadDivisionTable)'>삭제</button>
+              ${hasPermission('settings','delete') ? `<button class="btn btn-danger btn-sm" onclick='deleteSetting("Settings_Division","${r['ID']}","ID","${r['구분명']||r['ID']}",loadDivisionTable)'>삭제</button>` : ''}
             </div>
           </td>
         </tr>`).join('')}
@@ -1558,7 +1606,7 @@ async function renderMasterParts(el) {
             <input class="search-input" id="parts-search" placeholder="품번, 품명, 모델명 검색..."
                    oninput="filterPartsTable(this.value)">
           </div>
-          <button class="btn btn-primary btn-sm" onclick="selectPart(null)">+ 신규 등록</button>
+          ${hasPermission('parts','edit') ? '<button class="btn btn-primary btn-sm" onclick="selectPart(null)">+ 신규 등록</button>' : ''}
         </div>
       </div>
       <div id="parts-table">
@@ -1644,8 +1692,7 @@ function renderPartsRows(rows) {
         <td>${r['카테고리'] ? `<span class="badge badge-blue">${r['카테고리']}</span>` : ''}</td>
         <td>${badgeYN(r['사용여부'])}</td>
         <td onclick="event.stopPropagation()">
-          <button class="btn btn-danger btn-sm" onclick="deletePartById(this)"
-            data-id="${r['PartNo']}" data-label="${r['품명']||r['PartNo']}">삭제</button>
+          ${hasPermission('parts','delete') ? `<button class="btn btn-danger btn-sm" onclick="deletePartById(this)" data-id="${r['PartNo']}" data-label="${r['품명']||r['PartNo']}">삭제</button>` : ''}
         </td>
       </tr>`;}).join('')}
     </tbody>
@@ -1747,12 +1794,12 @@ function renderPartForm(d) {
     </div>` : ''}
 
     <div class="flex gap-2" style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
-      <button class="btn btn-success" id="pd-save-btn" onclick="savePartDetail()">
+      ${hasPermission('parts','edit') ? `<button class="btn btn-success" id="pd-save-btn" onclick="savePartDetail()">
         ${isEdit ? '💾 수정 저장' : '➕ 등록'}
-      </button>
-      ${isEdit ? `
-      <button class="btn btn-danger" onclick="deletePartDetail('${esc(d['PartNo'])}','${esc(d['품명']||'')}')">🗑 삭제</button>
-      <button class="btn btn-secondary" onclick="selectPart(null)">✕ 취소</button>` : ''}
+      </button>` : ''}
+      ${isEdit && hasPermission('parts','delete') ? `
+      <button class="btn btn-danger" onclick="deletePartDetail('${esc(d['PartNo'])}','${esc(d['품명']||'')}')">🗑 삭제</button>` : ''}
+      ${isEdit ? `<button class="btn btn-secondary" onclick="selectPart(null)">✕ 취소</button>` : ''}
     </div>`;
 
   if (isEdit && d?.['PartNo']) {
@@ -1850,7 +1897,7 @@ async function renderMasterEquip(el) {
             <input class="search-input" id="equip-search" placeholder="장비번호, 장비명, 모델명 검색..."
                    oninput="filterEquipTable(this.value)">
           </div>
-          <button class="btn btn-primary btn-sm" onclick="selectEquip(null)">+ 신규 등록</button>
+          ${hasPermission('equip','edit') ? '<button class="btn btn-primary btn-sm" onclick="selectEquip(null)">+ 신규 등록</button>' : ''}
         </div>
       </div>
       <div id="equip-table">
@@ -1934,8 +1981,7 @@ function renderEquipRows(rows) {
         </td>
         <td>${badgeYN(r['사용여부'])}</td>
         <td onclick="event.stopPropagation()">
-          <button class="btn btn-danger btn-sm" onclick="deleteEquipById(this)"
-                  data-id="${r['EquipNo']}" data-label="${r['장비명']||r['EquipNo']}">삭제</button>
+          ${hasPermission('equip','delete') ? `<button class="btn btn-danger btn-sm" onclick="deleteEquipById(this)" data-id="${r['EquipNo']}" data-label="${r['장비명']||r['EquipNo']}">삭제</button>` : ''}
         </td>
       </tr>`;}).join('')}
     </tbody>
@@ -2041,12 +2087,12 @@ function renderEquipForm(d) {
     </div>` : ''}
 
     <div class="flex gap-2" style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
-      <button class="btn btn-success" id="ed-save-btn" onclick="saveEquipDetail()">
+      ${hasPermission('equip','edit') ? `<button class="btn btn-success" id="ed-save-btn" onclick="saveEquipDetail()">
         ${isEdit ? '💾 수정 저장' : '➕ 등록'}
-      </button>
-      ${isEdit ? `
-      <button class="btn btn-danger" onclick="deleteEquipDetail('${esc(d['EquipNo'])}','${esc(d['장비명']||'')}')">🗑 삭제</button>
-      <button class="btn btn-secondary" onclick="selectEquip(null)">✕ 취소</button>` : ''}
+      </button>` : ''}
+      ${isEdit && hasPermission('equip','delete') ? `
+      <button class="btn btn-danger" onclick="deleteEquipDetail('${esc(d['EquipNo'])}','${esc(d['장비명']||'')}')">🗑 삭제</button>` : ''}
+      ${isEdit ? `<button class="btn btn-secondary" onclick="selectEquip(null)">✕ 취소</button>` : ''}
     </div>`;
 
   if (isEdit && d?.['EquipNo']) {
@@ -3996,9 +4042,9 @@ function renderQuotPage() {
       <td>
         <div class="flex gap-2">
           <button class="btn btn-secondary btn-sm" onclick="openQuotDetail('${r['QuotNo']}')">상세</button>
-          <button class="btn btn-success btn-sm" onclick="openConfirmQuotModal('${r['QuotNo']}')"
-                  ${r['상태']==='확정'?'disabled title="이미 확정됨"':''}>확정</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteQuot('${r['QuotNo']}')">삭제</button>
+          ${hasPermission('sales','edit') ? `<button class="btn btn-success btn-sm" onclick="openConfirmQuotModal('${r['QuotNo']}')"
+                  ${r['상태']==='확정'?'disabled title="이미 확정됨"':''}>확정</button>` : ''}
+          ${hasPermission('quotation','delete') ? `<button class="btn btn-danger btn-sm" onclick="deleteQuot('${r['QuotNo']}')">삭제</button>` : ''}
         </div>
       </td>
     </tr>`;
