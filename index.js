@@ -864,9 +864,9 @@ function openStaffModal(data=null) {
           if (!hasExisting && newId) {
             // ── 신규 계정 생성 (비밀번호 해시는 GAS에서 계산 — 임시비밀번호 통일)
             const r = await api({
-              action:   'setupAccount',
+              action:    'setupAccount',
               staffId:  d['ID'],
-              userId:   newId,
+              accountId: newId,
               isAdmin:  isAdminVal,
               permissions: perms,   // 사용자가 설정한 권한 전달
             });
@@ -882,7 +882,7 @@ function openStaffModal(data=null) {
             };
             if (newId && newId !== d['아이디']) {
               // 아이디 변경: 프론트에서 중복 확인 후 updateSetting으로만 처리 (비밀번호 초기화 안 함)
-              const dupCheck = await api({ action:'testSetupAccount', staffId:d['ID'], userId:newId });
+              const dupCheck = await api({ action:'testSetupAccount', staffId:d['ID'], accountId:newId });
               if (dupCheck.wouldBlock) {
                 const who = dupCheck.conflictingRows?.[0];
                 showToast(`"${newId}" 은(는) ${who?.['이름'] || '다른 직원'}이 이미 사용 중입니다`, 'error');
