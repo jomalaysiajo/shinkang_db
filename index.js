@@ -234,10 +234,13 @@ async function doLogin() {
 function enterApp() {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.add('visible');
-  // 상단 사용자명 업데이트
+  // 상단 사용자명 표시
+  const s = getSession();
   const dot = document.querySelector('.topbar-user-dot');
-  if (dot) dot.title = getDisplayName() + ' 로그인 중';
-  // 사이드바 권한 적용
+  if (dot) {
+    dot.title = (s?.displayName || '사용자') + (s?.isAdmin ? ' (관리자)' : '') + ' 로그인 중';
+  }
+  // 사이드바 권한 적용 (전체 초기화 포함)
   updateNavPermissions();
   loadCache();
   navigate('dashboard');
@@ -247,6 +250,10 @@ function doLogout() {
   clearSession();
   API_KEY = ''; CACHE = {};
   _pageNodes.clear();
+  // 이전 세션의 nav 숨김 상태 초기화 (다음 로그인 계정과 무관하게 전체 표시)
+  document.querySelectorAll('[onclick*="navigate("]').forEach(el => {
+    el.style.display = '';
+  });
   document.getElementById('app').classList.remove('visible');
   document.getElementById('login-screen').classList.remove('hidden');
   const idEl = document.getElementById('login-id');
@@ -520,14 +527,22 @@ const PAGE_PERM_MAP = {
 
 /** 사이드바 메뉴 + 하단 탭 — 권한 없는 항목 숨김 */
 function updateNavPermissions() {
-  const s = getSession();
-  if (!s || s.isAdmin) return;  // 관리자는 전부 표시
+  // 로그인 전환 시 이전 세션의 숨김 상태가 남지 않도록 항상 전체 초기화부터
+  document.querySelectorAll('[onclick*="navigate("]').forEach(el => {
+    el.style.display = '';
+  });
 
+  const s = getSession();
+  if (!s || s.isAdmin) return;  // 관리자: 모두 표시 후 종료
+
+  // 비관리자: 열람 권한 없는 항목만 숨김
   document.querySelectorAll('[onclick*="navigate("]').forEach(el => {
     const m = (el.getAttribute('onclick') || '').match(/navigate\('([^']+)'\)/);
     if (!m) return;
     const area = PAGE_PERM_MAP[m[1]];
-    el.style.display = (area && !hasPermission(area, 'view')) ? 'none' : '';
+    if (area && !hasPermission(area, 'view')) {
+      el.style.display = 'none';
+    }
   });
 }
 
