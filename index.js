@@ -4065,9 +4065,10 @@ function renderQuotPage() {
     return a[1].name.localeCompare(b[1].name, 'ko');
   });
 
-  const rowHtml = r => `
+  const rowHtml = (r, seq) => `
     <tr style="background:var(--bg-row,#fff)">
-      <td class="td-mono" style="cursor:pointer;color:var(--accent);padding-left:28px"
+      <td style="text-align:center;font-size:12px;color:var(--text3);font-weight:600;min-width:28px">${seq}</td>
+      <td class="td-mono" style="cursor:pointer;color:var(--accent);padding-left:8px"
           onclick="openQuotDetail('${r['QuotNo']}')">${r['QuotNo']}</td>
       <td class="td-muted">${fmtDate(r['견적일'])}</td>
       <td><strong>${r['공급사명']||''}</strong></td>
@@ -4092,6 +4093,14 @@ function renderQuotPage() {
     const isNone = key === '__none__';
     const label  = isNone ? '미분류 (프로젝트 없음)' : g.name;
     const gId    = 'qg-' + key.replace(/[^a-zA-Z0-9]/g,'_');
+
+    // 최신 견적이 위로 — 등록일 내림차순 정렬
+    const sorted = [...g.rows].sort((a, b) => {
+      const da = new Date(String(a['등록일']||'').replace(' ','T'));
+      const db = new Date(String(b['등록일']||'').replace(' ','T'));
+      return db - da;  // 내림차순
+    });
+
     return `
       <div class="quot-group" style="margin-bottom:12px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
         <!-- 그룹 헤더 -->
@@ -4111,12 +4120,13 @@ function renderQuotPage() {
           <div class="table-wrap" style="margin:0">
             <table>
               <thead><tr style="background:var(--bg)">
+                <th style="text-align:center;width:36px">#</th>
                 <th>견적번호</th><th>견적일</th><th>공급사</th>
                 <th>담당자</th><th style="text-align:center">품목수</th>
                 <th style="text-align:right">합계</th>
                 <th>상태</th><th>등록일</th><th></th>
               </tr></thead>
-              <tbody>${g.rows.map(rowHtml).join('')}</tbody>
+              <tbody>${sorted.map((r, i) => rowHtml(r, i + 1)).join('')}</tbody>
             </table>
           </div>
         </div>
